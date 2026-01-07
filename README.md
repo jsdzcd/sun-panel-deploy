@@ -14,5 +14,6 @@
 
 文件名：`deploy_sunpanel_interactive.sh`
 
-curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/refs/heads/main/deploy_sunpanel_interactive.sh
+具体执行下面这段命令
+curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/deploy_sunpanel_interactive.sh | bash
 

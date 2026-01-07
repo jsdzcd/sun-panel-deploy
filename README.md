@@ -19,4 +19,4 @@ curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/deploy
 
 ## **二、菜单式入口脚本（推荐）**
 
-
+curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/sunpanel.sh | bash

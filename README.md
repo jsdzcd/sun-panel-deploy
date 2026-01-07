@@ -17,3 +17,6 @@
 具体执行下面这段命令
 curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/deploy_sunpanel_interactive.sh | bash
 
+## **二、菜单式入口脚本（推荐）**
+
+

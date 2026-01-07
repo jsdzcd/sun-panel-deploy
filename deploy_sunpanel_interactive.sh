@@ -1,240 +1,147 @@
 #!/bin/bash
-# ===============================================
-# 交互式 GitHub-ready 一键部署 sun-panel-v2 + Nginx + HTTPS + Docker
-# 支持数据库每日备份保留设置
-# ===============================================
+set -e
 
-echo "===== 欢迎使用 sun-panel-v2 一键部署脚本 ====="
+# ===============================
+# Sun-Panel-v2 v1.0 交互式部署脚本
+# ===============================
 
-# -------------------------------
-# 1. 基础信息输入
-# -------------------------------
-read -p "请输入你的域名 (例如 panel.example.com): " DOMAIN
-DOMAIN=${DOMAIN:-"panel.example.com"}
-
-read -p "请输入你的邮箱 (用于 HTTPS 证书): " EMAIL
-EMAIL=${EMAIL:-"youremail@example.com"}
-
-read -p "请输入部署目录 (默认 $HOME/sun-panel-v2): " BASE_DIR
-BASE_DIR=${BASE_DIR:-"$HOME/sun-panel-v2"}
-
-BACKUP_DIR="$BASE_DIR/backup"
-
-# -------------------------------
-# 2. Docker 检测与安装
-# -------------------------------
-if ! command -v docker &> /dev/null; then
-    read -p "检测到未安装 Docker，是否自动安装 Docker? [Y/n]: " INSTALL_DOCKER
-    INSTALL_DOCKER=${INSTALL_DOCKER:-Y}
-    if [[ "$INSTALL_DOCKER" =~ ^[Yy]$ ]]; then
-        echo "🚀 开始安装 Docker ..."
-        sudo apt update
-        sudo apt install -y ca-certificates curl gnupg lsb-release
-        sudo mkdir -p /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt update
-        sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-        echo "✅ Docker 安装完成"
-    else
-        echo "请先手动安装 Docker 后再执行脚本"
-        exit 1
-    fi
-else
-    echo "✅ Docker 已安装"
+# ---------- 基础 ----------
+if [ "$EUID" -ne 0 ]; then
+  echo "[ERROR] 请使用 root 用户运行（sudo -i）"
+  exit 1
 fi
 
-# Docker Compose 检查
-if ! docker compose version &> /dev/null; then
-    echo "⚠️ Docker Compose 未安装，请确认 Docker v2 插件安装成功"
-else
-    echo "✅ Docker Compose 已安装"
-fi
+echo "======================================"
+echo " Sun-Panel-v2 一键部署（v1.0 稳定版）"
+echo "======================================"
+echo
 
-# 添加当前用户到 docker 组
-if ! groups $USER | grep -q "\bdocker\b"; then
-    sudo usermod -aG docker $USER
-    echo "⚠️ 用户已加入 docker 组，请重新登录或执行 'newgrp docker'"
-fi
+# ---------- 交互输入 ----------
+read -p "请输入域名 (如 panel.example.com): " DOMAIN
+[ -z "$DOMAIN" ] && { echo "域名不能为空"; exit 1; }
 
-# -------------------------------
-# 3. 数据库备份配置
-# -------------------------------
-read -p "是否启用每日数据库备份? [Y/n]: " ENABLE_BACKUP
+read -p "请输入邮箱 (用于 HTTPS 证书): " EMAIL
+[ -z "$EMAIL" ] && { echo "邮箱不能为空"; exit 1; }
+
+read -p "部署目录 (默认 /opt/sun-panel-v2): " BASE_DIR
+BASE_DIR=${BASE_DIR:-/opt/sun-panel-v2}
+
+read -p "是否启用数据库每日备份? [Y/n]: " ENABLE_BACKUP
 ENABLE_BACKUP=${ENABLE_BACKUP:-Y}
 
 if [[ "$ENABLE_BACKUP" =~ ^[Yy]$ ]]; then
-    read -p "备份保留天数 (默认 7 天): " BACKUP_DAYS
-    BACKUP_DAYS=${BACKUP_DAYS:-7}
+  read -p "备份保留天数 (默认 7): " BACKUP_DAYS
+  BACKUP_DAYS=${BACKUP_DAYS:-7}
 
-    read -p "每日备份时间 (默认 02:00): " BACKUP_TIME
-    BACKUP_TIME=${BACKUP_TIME:-02:00}
+  read -p "每日备份时间 (HH:MM，默认 02:00): " BACKUP_TIME
+  BACKUP_TIME=${BACKUP_TIME:-02:00}
 
-    echo "✅ 数据库备份配置:"
-    echo "每日备份时间: $BACKUP_TIME"
-    echo "备份保留天数: $BACKUP_DAYS"
+  BACKUP_HOUR=${BACKUP_TIME%:*}
+  BACKUP_MIN=${BACKUP_TIME#*:}
 fi
 
-# -------------------------------
-# 4. 确认部署信息
-# -------------------------------
-echo "=============================="
-echo "部署信息确认:"
-echo "域名: $DOMAIN"
-echo "邮箱: $EMAIL"
-echo "目录: $BASE_DIR"
-echo "每日备份: $ENABLE_BACKUP"
+echo
+echo "========= 配置确认 ========="
+echo "域名:        $DOMAIN"
+echo "邮箱:        $EMAIL"
+echo "部署目录:    $BASE_DIR"
+echo "数据库备份:  $ENABLE_BACKUP"
 if [[ "$ENABLE_BACKUP" =~ ^[Yy]$ ]]; then
-    echo "备份时间: $BACKUP_TIME"
-    echo "备份保留天数: $BACKUP_DAYS"
+  echo "备份时间:    $BACKUP_TIME"
+  echo "保留天数:    $BACKUP_DAYS"
 fi
-echo "=============================="
-read -p "确认无误，开始部署? [Y/n]: " CONFIRM
+echo "============================"
+read -p "确认开始部署? [Y/n]: " CONFIRM
 CONFIRM=${CONFIRM:-Y}
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "部署已取消"
-    exit 0
+[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
+
+# ---------- Docker ----------
+if ! command -v docker >/dev/null; then
+  echo "[INFO] 安装 Docker..."
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable docker
+  systemctl start docker
 fi
 
-# -------------------------------
-# 5. 创建目录结构
-# -------------------------------
-mkdir -p "$BASE_DIR/conf"
-mkdir -p "$BASE_DIR/uploads"
-mkdir -p "$BASE_DIR/nginx/conf.d"
-mkdir -p "$BASE_DIR/nginx/certs"
-mkdir -p "$BASE_DIR/nginx/certbot"
-mkdir -p "$BACKUP_DIR"
+if ! docker compose version >/dev/null 2>&1; then
+  echo "[INFO] 安装 Docker Compose v2..."
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi
 
-# -------------------------------
-# 6. 生成 docker-compose.yml
-# -------------------------------
-cat > "$BASE_DIR/docker-compose.yml" <<EOF
+# ---------- Nginx + Certbot ----------
+apt update
+apt install -y nginx certbot python3-certbot-nginx
+
+# ---------- 目录 ----------
+mkdir -p "$BASE_DIR"/{conf,uploads,database,backup}
+cd "$BASE_DIR"
+
+# ---------- docker-compose ----------
+cat > docker-compose.yml <<EOF
 version: "3.8"
-
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
     container_name: sun-panel-v2
-    networks:
-      - internal
     volumes:
       - ./conf:/app/conf
       - ./uploads:/app/uploads
+      - ./database:/app/database
+    expose:
+      - "3002"
     restart: always
-
-  nginx:
-    image: nginx:latest
-    container_name: nginx-proxy
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d
-      - ./nginx/certs:/etc/letsencrypt/live
-      - ./nginx/certbot:/var/www/certbot
-    depends_on:
-      - sun-panel
-    restart: always
-    networks:
-      - internal
-      - default
-
-  certbot:
-    image: certbot/certbot
-    container_name: certbot
-    volumes:
-      - ./nginx/certs:/etc/letsencrypt/live
-      - ./nginx/certbot:/var/www/certbot
-    entrypoint: /bin/sh -c
-    command: >
-      "trap exit TERM;
-       while :; do
-         certbot renew --webroot -w /var/www/certbot --quiet;
-         sleep 12h & wait \$\$!;
-       done"
-    networks:
-      - default
-
-networks:
-  internal:
-    driver: bridge
 EOF
 
-# -------------------------------
-# 7. 生成 Nginx 配置
-# -------------------------------
-cat > "$BASE_DIR/nginx/conf.d/sun-panel.conf" <<EOF
+# ---------- Nginx ----------
+cat > /etc/nginx/sites-available/sun-panel.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass http://sun-panel:3002;
+        proxy_pass http://127.0.0.1:3002;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 
-# -------------------------------
-# 8. 获取 Let’s Encrypt 证书
-# -------------------------------
-echo "🔑 获取 Let’s Encrypt 证书..."
-docker run -it --rm \
-  -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-  -v "$BASE_DIR/nginx/certbot:/var/www/certbot" \
-  certbot/certbot certonly \
-  --webroot -w /var/www/certbot \
-  -d "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email
+ln -sf /etc/nginx/sites-available/sun-panel.conf /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
 
-# -------------------------------
-# 9. 启动容器
-# -------------------------------
-cd "$BASE_DIR"
+# ---------- HTTPS ----------
+certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive --redirect
+
+# ---------- 启动 ----------
 docker compose up -d
 
-# -------------------------------
-# 10. 配置数据库每日备份
-# -------------------------------
+# ---------- 数据库备份 ----------
 if [[ "$ENABLE_BACKUP" =~ ^[Yy]$ ]]; then
-BACKUP_SCRIPT="$BASE_DIR/backup_db.sh"
-cat > "$BACKUP_SCRIPT" <<EOF
+cat > /usr/local/bin/sunpanel_backup.sh <<EOF
 #!/bin/bash
-DB_FILE="$BASE_DIR/conf/database/database.db"
-BACKUP_DIR="$BACKUP_DIR"
-if [ -f "\$DB_FILE" ]; then
-    cp "\$DB_FILE" "\$BACKUP_DIR/database_\$(date +%Y%m%d_%H%M%S).db"
-    find "\$BACKUP_DIR" -type f -name "database_*.db" -mtime +$BACKUP_DAYS -exec rm {} \;
-fi
+BASE_DIR="$BASE_DIR"
+BACKUP_DIR="\$BASE_DIR/backup"
+DB_DIR="\$BASE_DIR/database"
+DATE=\$(date +%F_%H-%M)
+
+mkdir -p "\$BACKUP_DIR"
+tar czf "\$BACKUP_DIR/db_\$DATE.tar.gz" -C "\$DB_DIR" .
+find "\$BACKUP_DIR" -type f -mtime +$BACKUP_DAYS -delete
 EOF
-chmod +x "$BACKUP_SCRIPT"
-(crontab -l 2>/dev/null; echo "$BACKUP_TIME * * * $BACKUP_SCRIPT") | crontab -
+
+chmod +x /usr/local/bin/sunpanel_backup.sh
+(crontab -l 2>/dev/null; echo "$BACKUP_MIN $BACKUP_HOUR * * * /usr/local/bin/sunpanel_backup.sh") | crontab -
 fi
 
-echo "🎉 部署完成！"
-echo "✅ HTTPS 面板已启动: https://$DOMAIN"
-if [[ "$ENABLE_BACKUP" =~ ^[Yy]$ ]]; then
-    echo "✅ 数据库每日备份已配置，保留最近 $BACKUP_DAYS 天"
-fi
-echo "⚠️ 第一次访问面板会提示创建管理员账号"
+echo
+echo "======================================"
+echo " 🎉 部署完成（v1.0 稳定版）"
+echo "--------------------------------------"
+echo "访问地址: https://$DOMAIN"
+echo "首次访问需创建管理员账号"
+echo "部署目录: $BASE_DIR"
+echo "======================================"

@@ -14,5 +14,5 @@
 
 文件名：`deploy_sunpanel_interactive.sh`
 
-上传 GitHub 仓库后，目录结构示例：
+curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/refs/heads/main/deploy_sunpanel_interactive.sh
 

@@ -1,13 +1,12 @@
 #!/bin/bash
 # =====================================================
 # Sun-Panel-v2 菜单式一键部署脚本 v1.2.6
-# 支持 HTTP 先行 + HTTPS 多方式申请 + 数据库备份
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
 DB_FILE="$BASE_DIR/conf/database/database.db"
 BACKUP_DIR="$BASE_DIR/backup"
-WEBROOT="/var/www/certbot"
+WEBROOT="$BASE_DIR/nginx/certbot"
 
 GREEN="\033[32m"
 RED="\033[31m"
@@ -54,7 +53,6 @@ install_sunpanel(){
 
   echo -e "${YELLOW}▶ 创建 docker-compose.yml${RESET}"
 cat > $BASE_DIR/docker-compose.yml <<EOF
-version: "3.8"
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
@@ -105,7 +103,16 @@ EOF
 start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
 stop_service(){ cd $BASE_DIR && docker compose down && echo -e "${YELLOW}✔ 服务已停止${RESET}"; }
 restart_service(){ cd $BASE_DIR && docker compose restart && echo -e "${GREEN}✔ 服务已重启${RESET}"; }
-update_service(){ cd $BASE_DIR && docker compose pull && docker compose up -d && echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"; }
+
+update_service(){
+  cd $BASE_DIR
+  echo -e "${YELLOW}▶ 拉取最新镜像${RESET}"
+  docker compose pull
+  echo -e "${YELLOW}▶ 停止旧容器并启动最新版本${RESET}"
+  docker compose up -d
+  echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"
+  echo -e "▶ 查看容器日志: docker compose logs -f"
+}
 
 backup_db(){
   mkdir -p $BACKUP_DIR
@@ -145,7 +152,7 @@ request_https(){
       echo "▶ 使用 Webroot 方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
+        -v "$WEBROOT:$WEBROOT" \
         certbot/certbot certonly \
         --webroot -w $WEBROOT \
         -d "$DOMAIN" \
@@ -162,7 +169,7 @@ request_https(){
       echo "▶ 使用 DNS 方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
+        -v "$WEBROOT:$WEBROOT" \
         -v "$CF_INI:/cloudflare.ini:ro" \
         certbot/dns-cloudflare certonly \
         --dns-cloudflare \
@@ -174,7 +181,7 @@ request_https(){
       echo "▶ 使用 Let's Encrypt 官方方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
+        -v "$WEBROOT:$WEBROOT" \
         -v "/etc/nginx:/etc/nginx" \
         certbot/certbot run \
         --nginx \

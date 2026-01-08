@@ -1,306 +1,207 @@
-#!/bin/bash
-# =====================================================
-# Sun-Panel-v2 菜单式一键部署脚本 v1.2.9
-# =====================================================
+#!/usr/bin/env bash
+set -e
 
+# ================= 基础配置 =================
 BASE_DIR="/opt/sun-panel-v2"
-DB_FILE="$BASE_DIR/conf/database/database.db"
-BACKUP_DIR="$BASE_DIR/backup"
+COMPOSE_FILE="$BASE_DIR/docker-compose.yml"
 WEBROOT="$BASE_DIR/nginx/certbot"
-
-# 外网端口配置
 HTTP_PORT=3002
 HTTPS_PORT=3443
+DOMAIN_FILE="$BASE_DIR/.domain"
 
 GREEN="\033[32m"
 RED="\033[31m"
 YELLOW="\033[33m"
 RESET="\033[0m"
 
-pause(){ read -p "按 Enter 键继续..." ; }
+# ================= 工具函数 =================
+pause() { read -rp "按 Enter 键继续..."; }
 
-check_root(){
-  if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}请使用 root 用户运行${RESET}"
-    exit 1
-  fi
+check_root() {
+  [[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 运行${RESET}" && exit 1
 }
 
-install_env(){
-  echo -e "${YELLOW}▶ 安装系统依赖${RESET}"
+install_base() {
   apt update
-  apt install -y curl wget nginx ca-certificates gnupg lsb-release software-properties-common
-
-  if ! command -v docker &>/dev/null; then
-    echo -e "${YELLOW}▶ 安装 Docker${RESET}"
-    curl -fsSL https://get.docker.com | bash
-  fi
-
+  apt install -y curl nginx docker.io docker-compose-plugin certbot
   systemctl enable docker nginx
   systemctl start docker nginx
 }
 
-fix_permissions(){
-  echo -e "${YELLOW}▶ 修复挂载目录权限${RESET}"
-  mkdir -p "$BASE_DIR"/{conf,uploads,database,backup,nginx/certs,nginx/certbot,nginx/conf.d}
-  chown -R $USER:$USER "$BASE_DIR"
-  chmod -R 755 "$BASE_DIR"
-  mkdir -p "$WEBROOT"
+get_domain() {
+  if [[ -f "$DOMAIN_FILE" ]]; then
+    DOMAIN=$(cat "$DOMAIN_FILE")
+  else
+    read -rp "请输入绑定域名: " DOMAIN
+    echo "$DOMAIN" > "$DOMAIN_FILE"
+  fi
 }
 
-install_sunpanel(){
-  read -p "请输入访问域名 (如 panel.example.com): " DOMAIN
-  read -p "请输入邮箱 (证书使用，可稍后申请): " EMAIL
+cert_exists() {
+  [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]
+}
 
-  install_env
-  fix_permissions
+# ================= Nginx 配置 =================
+write_nginx_http() {
+  cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
+server {
+    listen ${HTTP_PORT};
+    server_name ${DOMAIN};
 
-  echo -e "${YELLOW}▶ 创建 docker-compose.yml${RESET}"
-cat > $BASE_DIR/docker-compose.yml <<EOF
+    location /.well-known/acme-challenge/ {
+        root ${WEBROOT};
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:${HTTP_PORT};
+        proxy_set_header Host \$host;
+    }
+}
+EOF
+}
+
+write_nginx_https() {
+  cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
+server {
+    listen ${HTTP_PORT};
+    server_name ${DOMAIN};
+    return 301 https://\$host:${HTTPS_PORT}\$request_uri;
+}
+
+server {
+    listen ${HTTPS_PORT} ssl http2;
+    server_name ${DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:${HTTP_PORT};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+EOF
+}
+
+reload_nginx() {
+  nginx -t && systemctl reload nginx
+}
+
+# ================= Docker =================
+write_compose() {
+  read -rp "请输入容器映射的端口（例如：3002，默认值是3002）: " CONTAINER_PORT
+  CONTAINER_PORT=${CONTAINER_PORT:-3002}
+
+  mkdir -p "$BASE_DIR"
+  cat > "$COMPOSE_FILE" <<EOF
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
     container_name: sun-panel-v2
-    restart: always
+    restart: unless-stopped
     ports:
-      - "${HTTP_PORT}:3002"
+      - "${CONTAINER_PORT}:3002"
     volumes:
-      - ./conf:/app/conf
-      - ./uploads:/app/uploads
-      - ./database:/app/database
+      - ${BASE_DIR}/database:/app/database
 EOF
-
-  cd $BASE_DIR
-  echo -e "${YELLOW}▶ 启动容器（后台）${RESET}"
-  docker compose up -d
-
-  echo -e "${YELLOW}▶ 配置 Nginx HTTP（自定义端口）${RESET}"
-cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
-server {
-    listen ${HTTP_PORT};
-    server_name $DOMAIN;
-    return 301 https://\$host:${HTTPS_PORT}\$request_uri;
 }
 
-server {
-    listen ${HTTPS_PORT} ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    location / {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
+docker_up() {
+  docker compose -f "$COMPOSE_FILE" up -d
 }
-EOF
 
-  if nginx -t; then
-    systemctl reload nginx
-    echo -e "${GREEN}✔ Nginx 配置完成${RESET}"
-  else
-    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查${RESET}"
+# ================= 功能实现 =================
+install_all() {
+  check_root
+  install_base
+  get_domain
+
+  mkdir -p "$WEBROOT"
+  write_compose
+  docker_up
+
+  write_nginx_http
+  reload_nginx
+
+  echo -e "${GREEN}✔ 安装完成（HTTP 端口 ${HTTP_PORT}）${RESET}"
+}
+
+apply_cert() {
+  get_domain
+
+  if cert_exists; then
+    echo -e "${YELLOW}证书已存在，无需重复申请${RESET}"
+    pause; return
   fi
 
-  echo -e "${GREEN}✔ 部署完成（HTTP ${HTTP_PORT} → HTTPS ${HTTPS_PORT} 可访问）${RESET}"
-}
+  certbot certonly \
+    --webroot \
+    -w "$WEBROOT" \
+    -d "$DOMAIN" \
+    --agree-tos \
+    -m "admin@$DOMAIN" \
+    --non-interactive
 
-start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
-stop_service(){ cd $BASE_DIR && docker compose down && echo -e "${YELLOW}✔ 服务已停止${RESET}"; }
-restart_service(){ cd $BASE_DIR && docker compose restart && echo -e "${GREEN}✔ 服务已重启${RESET}"; }
-
-update_service(){
-  cd $BASE_DIR
-  echo -e "${YELLOW}▶ 拉取最新镜像${RESET}"
-  docker compose pull
-  echo -e "${YELLOW}▶ 重启容器${RESET}"
-  docker compose up -d
-  echo -e "${GREEN}✔ 更新完成${RESET}"
-}
-
-backup_db(){
-  mkdir -p $BACKUP_DIR
-  [[ -f "$DB_FILE" ]] && cp "$DB_FILE" "$BACKUP_DIR/db_$(date +%F_%H-%M-%S).db" && echo -e "${GREEN}✔ 数据库已备份${RESET}" || echo -e "${RED}未找到数据库文件${RESET}"
-}
-
-restore_db(){
-  [[ ! -d "$BACKUP_DIR" ]] && { echo -e "${RED}未找到备份目录${RESET}"; return; }
-  echo "可用备份:"; ls $BACKUP_DIR
-  read -p "输入要恢复的文件名: " FILE
-  [[ -f "$BACKUP_DIR/$FILE" ]] && cp "$BACKUP_DIR/$FILE" "$DB_FILE" && docker compose restart && echo -e "${GREEN}✔ 数据库已恢复${RESET}" || echo -e "${RED}备份文件不存在${RESET}"
-}
-
-uninstall_all(){
-  read -p "⚠️ 确认彻底卸载? [y/N]: " OK
-  [[ "$OK" =~ ^[Yy]$ ]] || return
-  docker compose down
-  rm -rf $BASE_DIR
-  rm -f /etc/nginx/conf.d/sun-panel.conf
-  systemctl reload nginx
-  echo -e "${RED}✔ 已卸载${RESET}"
-}
-
-request_https(){
-  echo "请选择证书申请方式:"
-  echo "1) Webroot (HTTP 验证)"
-  echo "2) DNS 验证 (Cloudflare / Aliyun 等)"
-  echo "3) Let's Encrypt 官方方式"
-  echo "0) 取消"
-  read -p "选择: " METHOD
-
-  read -p "请输入域名: " DOMAIN
-  read -p "请输入邮箱: " EMAIL
-
-  case $METHOD in
-    1)
-      echo "▶ Webroot 申请证书..."
-      docker run -it --rm \
-        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$WEBROOT:$WEBROOT" \
-        certbot/certbot certonly \
-        --webroot -w $WEBROOT \
-        -d "$DOMAIN" \
-        --email "$EMAIL" --agree-tos --no-eff-email
-      ;;
-    2)
-      CF_INI="$BASE_DIR/certbot/cloudflare.ini"
-      if [[ ! -f "$CF_INI" ]]; then
-        echo -e "${RED}⚠️ Cloudflare API 文件不存在！请创建 $CF_INI${RESET}"
-        return
-      fi
-      echo "▶ DNS 方式申请证书..."
-      docker run -it --rm \
-        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$WEBROOT:$WEBROOT" \
-        -v "$CF_INI:/cloudflare.ini:ro" \
-        certbot/dns-cloudflare certonly \
-        --dns-cloudflare \
-        --dns-cloudflare-credentials /cloudflare.ini \
-        -d "$DOMAIN" \
-        --email "$EMAIL" --agree-tos --no-eff-email
-      ;;
-    3)
-      echo "▶ Let's Encrypt 官方方式申请证书..."
-      docker run -it --rm \
-        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$WEBROOT:$WEBROOT" \
-        -v "/etc/nginx:/etc/nginx" \
-        certbot/certbot run \
-        --nginx \
-        -d "$DOMAIN" \
-        --email "$EMAIL" --agree-tos --no-eff-email
-      ;;
-    0)
-      echo "取消申请"
-      return
-      ;;
-    *)
-      echo "无效选择"
-      return
-      ;;
-  esac
-
-  echo "▶ 自动生成强制 HTTPS Nginx 配置..."
-cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
-server {
-    listen ${HTTP_PORT};
-    server_name $DOMAIN;
-    return 301 https://\$host:${HTTPS_PORT}\$request_uri;
-}
-
-server {
-    listen ${HTTPS_PORT} ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    location / {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-  if nginx -t; then
-    systemctl reload nginx
-    echo -e "${GREEN}✔ HTTPS 证书申请成功，HTTP 自动重定向到 HTTPS${RESET}"
+  if cert_exists; then
+    write_nginx_https
+    reload_nginx
+    echo -e "${GREEN}✔ HTTPS 已启用（端口 ${HTTPS_PORT}）${RESET}"
   else
-    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查${RESET}"
+    echo -e "${RED}❌ 证书申请失败${RESET}"
   fi
 }
 
-check_status(){
-  echo "==================== 系统状态检测 ===================="
-  systemctl is-active --quiet docker && echo -e "Docker 服务状态: ${GREEN}运行${RESET}" || echo -e "Docker 服务状态: ${RED}未运行${RESET}"
-  docker ps --format '{{.Names}}' | grep -q "sun-panel-v2" && echo -e "Sun-Panel 容器: ${GREEN}运行${RESET}" || echo -e "Sun-Panel 容器: ${RED}未运行${RESET}"
-  systemctl is-active --quiet nginx && echo -e "Nginx 服务: ${GREEN}运行${RESET}" || echo -e "Nginx 服务: ${RED}未运行${RESET}"
+status_check() {
+  get_domain
+  echo "==================== 系统状态 ===================="
+  systemctl is-active docker >/dev/null && echo "Docker: 运行" || echo "Docker: 停止"
+  docker ps | grep sun-panel >/dev/null && echo "Sun-Panel 容器: 运行" || echo "Sun-Panel 容器: 未运行"
+  systemctl is-active nginx >/dev/null && echo "Nginx: 运行" || echo "Nginx: 停止"
 
-  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$HTTP_PORT || echo "000")
-  [[ "$HTTP_STATUS" == "200" ]] && echo -e "HTTP 面板访问: ${GREEN}可访问${RESET}" || echo -e "HTTP 面板访问: ${RED}不可访问${RESET}"
-
-  CERT_FILE=$(find "$BASE_DIR/nginx/certs" -name "fullchain.pem" | head -n1)
-  if [[ -f "$CERT_FILE" ]]; then
-    openssl x509 -checkend 86400 -noout -in "$CERT_FILE" &>/dev/null \
-      && echo -e "HTTPS 证书: ${GREEN}已申请并有效${RESET}" \
-      || echo -e "HTTPS 证书: ${YELLOW}已申请但即将过期${RESET}"
+  if cert_exists; then
+    echo "HTTPS 证书: 已申请"
   else
-    echo -e "HTTPS 证书: ${RED}未申请${RESET}"
+    echo "HTTPS 证书: 未申请"
   fi
-  echo "======================================================"
-}
-
-menu(){
-  clear
-  echo "=================================="
-  echo " Sun-Panel 管理脚本 v1.2.9"
-  echo "=================================="
-  echo "1) 一键安装 Sun-Panel"
-  echo "2) 启动服务"
-  echo "3) 停止服务"
-  echo "4) 重启服务"
-  echo "5) 更新 Sun-Panel"
-  echo "6) 备份数据库"
-  echo "7) 恢复数据库"
-  echo "8) 卸载 Sun-Panel"
-  echo "9) 申请/更新 HTTPS 证书"
-  echo "10) 查看系统状态"
-  echo "0) 退出"
-  echo "=================================="
-}
-
-check_root
-while true; do
-  menu
-  read -p "请选择: " NUM
-  case $NUM in
-    1) install_sunpanel ;;
-    2) start_service ;;
-    3) stop_service ;;
-    4) restart_service ;;
-    5) update_service ;;
-    6) backup_db ;;
-    7) restore_db ;;
-    8) uninstall_all ;;
-    9) request_https ;;
-    10) check_status ;;
-    0) exit 0 ;;
-    *) echo "无效选择" ;;
-  esac
+  echo "访问地址:"
+  echo "  HTTP  → http://${DOMAIN}:${HTTP_PORT}"
+  cert_exists && echo "  HTTPS → https://${DOMAIN}:${HTTPS_PORT}"
+  echo "=================================================="
   pause
-done
+}
+
+update_panel() {
+  docker compose -f "$COMPOSE_FILE" pull
+  docker compose -f "$COMPOSE_FILE" up -d
+  echo -e "${GREEN}✔ 更新完成${RESET}"
+  pause
+}
+
+# ================= 菜单 =================
+menu() {
+clear
+cat <<EOF
+==================================
+ Sun-Panel 管理脚本 v1.3.1 稳定版
+==================================
+1) 一键安装 Sun-Panel
+2) 更新 Sun-Panel
+3) 申请 / 启用 HTTPS
+4) 查看系统状态
+0) 退出
+==================================
+EOF
+read -rp "请选择: " CHOICE
+
+case "$CHOICE" in
+  1) install_all ;;
+  2) update_panel ;;
+  3) apply_cert ;;
+  4) status_check ;;
+  0) exit ;;
+  *) echo "无效选择"; pause ;;
+esac
+}
+
+while true; do menu; done

@@ -38,6 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/sunpan
 chmod +x sunpanel.sh
 ./sunpanel.sh
 ```
+curl -sS -O https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/sunpanel.sh && chmod +x sunpanel.sh && ./sunpanel.sh
 
 > ⚠️ **请使用 root 用户执行**
 

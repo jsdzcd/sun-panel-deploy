@@ -207,6 +207,51 @@ request_https(){
   fi
 }
 
+check_status(){
+  echo "==================== 系统状态检测 ===================="
+  # Docker 服务状态
+  if systemctl is-active --quiet docker; then
+    echo -e "Docker 服务状态: ${GREEN}运行${RESET}"
+  else
+    echo -e "Docker 服务状态: ${RED}未运行${RESET}"
+  fi
+
+  # Sun-Panel 容器状态
+  if docker ps --format '{{.Names}}' | grep -q "sun-panel-v2"; then
+    echo -e "Sun-Panel 容器: ${GREEN}运行${RESET}"
+  else
+    echo -e "Sun-Panel 容器: ${RED}未运行${RESET}"
+  fi
+
+  # Nginx 服务状态
+  if systemctl is-active --quiet nginx; then
+    echo -e "Nginx 服务: ${GREEN}运行${RESET}"
+  else
+    echo -e "Nginx 服务: ${RED}未运行${RESET}"
+  fi
+
+  # HTTP 面板访问
+  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3002 || echo "000")
+  if [[ "$HTTP_STATUS" == "200" ]]; then
+    echo -e "HTTP 面板访问: ${GREEN}可访问${RESET}"
+  else
+    echo -e "HTTP 面板访问: ${RED}不可访问${RESET}"
+  fi
+
+  # HTTPS 证书检测
+  CERT_FILE=$(find "$BASE_DIR/nginx/certs" -name "fullchain.pem" | head -n1)
+  if [[ -f "$CERT_FILE" ]]; then
+    if openssl x509 -checkend 86400 -noout -in "$CERT_FILE"; then
+      echo -e "HTTPS 证书: ${GREEN}已申请并有效${RESET}"
+    else
+      echo -e "HTTPS 证书: ${YELLOW}已申请但即将过期${RESET}"
+    fi
+  else
+    echo -e "HTTPS 证书: ${RED}未申请${RESET}"
+  fi
+  echo "======================================================"
+}
+
 menu(){
   clear
   echo "=================================="
@@ -221,6 +266,7 @@ menu(){
   echo "7) 恢复数据库"
   echo "8) 卸载 Sun-Panel"
   echo "9) 申请/更新 HTTPS 证书"
+  echo "10) 查看系统状态"
   echo "0) 退出"
   echo "=================================="
 }
@@ -239,6 +285,7 @@ while true; do
     7) restore_db ;;
     8) uninstall_all ;;
     9) request_https ;;
+    10) check_status ;;
     0) exit 0 ;;
     *) echo "无效选择" ;;
   esac

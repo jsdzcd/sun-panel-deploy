@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 菜单式一键部署脚本 v1.2.3
-# 稳定增强版（修复 Docker Compose 卡死问题）
+# sun-panel-v2 菜单式一键部署脚本 v1.2.4
+# 稳定增强版（容器启动 + 非阻塞 HTTPS）
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
@@ -48,12 +48,7 @@ fix_permissions(){
 
 install_sunpanel(){
   read -p "请输入访问域名: " DOMAIN
-  read -p "请输入邮箱 (证书使用): " EMAIL
-
-  if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
-    echo -e "${RED}域名和邮箱不能为空${RESET}"
-    return
-  fi
+  read -p "请输入邮箱 (证书使用，可稍后申请): " EMAIL
 
   install_env
   fix_permissions
@@ -83,60 +78,24 @@ server {
     listen 80;
     server_name $DOMAIN;
 
-    location /.well-known/acme-challenge/ {
-        root $WEBROOT;
-    }
-
     location / {
         proxy_pass http://127.0.0.1:3002;
         proxy_set_header Host \$host;
-    }
-}
-EOF
-
-  nginx -t && systemctl reload nginx
-
-  echo -e "${YELLOW}▶ 申请 HTTPS 证书${RESET}"
-  certbot certonly \
-    --webroot \
-    -w $WEBROOT \
-    -d "$DOMAIN" \
-    --email "$EMAIL" \
-    --agree-tos \
-    --no-eff-email || echo -e "${RED}⚠️ 证书申请失败，请检查域名解析${RESET}"
-
-  echo -e "${YELLOW}▶ 配置 Nginx HTTPS${RESET}"
-cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-    return 301 https://\$host\$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location / {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-Proto https;
     }
 }
 EOF
 
   if nginx -t; then
     systemctl reload nginx
-    echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
-    echo -e "${YELLOW}▶ 查看容器日志: docker compose logs -f${RESET}"
+    echo -e "${GREEN}✔ Nginx HTTP 配置完成${RESET}"
   else
-    echo -e "${RED}⚠️ HTTPS Nginx 配置失败${RESET}"
+    echo -e "${RED}⚠️ Nginx 配置失败，请检查${RESET}"
   fi
+
+  echo -e "${YELLOW}▶ 部署完成（HTTP 可先访问）${RESET}"
+  echo -e "${GREEN}✔ 面板访问地址: http://$DOMAIN 或 http://服务器IP:3002${RESET}"
+  echo -e "${YELLOW}⚠️ HTTPS 证书未申请，需单独执行 certbot 或使用菜单申请${RESET}"
+  echo -e "${YELLOW}▶ 查看容器日志: docker compose logs -f${RESET}"
 }
 
 start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
@@ -169,7 +128,7 @@ uninstall_all(){
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2.3"
+  echo " sun-panel 管理脚本 v1.2.4"
   echo "=================================="
   echo "1) 一键安装 sun-panel"
   echo "2) 启动服务"

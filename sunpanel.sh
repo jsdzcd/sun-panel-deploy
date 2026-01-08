@@ -1,58 +1,46 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 一键部署脚本 v1.1（稳定修复版）
-# 架构：宿主机 Nginx + Docker sun-panel
+# sun-panel-v2 菜单式管理脚本 v1.2
 # =====================================================
 
-set -e
-
-echo "======================================"
-echo " sun-panel-v2 一键部署脚本 v1.1 稳定版"
-echo "======================================"
-
-# -------------------------------
-# 1. 用户输入
-# -------------------------------
-read -p "请输入访问域名 (如 panel.example.com): " DOMAIN
-read -p "请输入邮箱 (用于 HTTPS 证书): " EMAIL
 BASE_DIR="/opt/sun-panel-v2"
+DB_FILE="$BASE_DIR/database/database.db"
+BACKUP_DIR="$BASE_DIR/backup"
 
-echo "安装目录: $BASE_DIR"
-read -p "确认继续? [Y/n]: " CONFIRM
-CONFIRM=${CONFIRM:-Y}
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
+GREEN="\033[32m"
+RED="\033[31m"
+YELLOW="\033[33m"
+RESET="\033[0m"
 
-# -------------------------------
-# 2. 安装依赖
-# -------------------------------
-apt update
-apt install -y curl wget git nginx ca-certificates gnupg lsb-release
+pause(){ read -p "按 Enter 键继续..." ; }
 
-# Docker
-if ! command -v docker &>/dev/null; then
-  curl -fsSL https://get.docker.com | bash
-fi
-
-systemctl enable docker
-systemctl start docker
-
-# Docker Compose
-docker compose version >/dev/null 2>&1 || {
-  echo "❌ Docker Compose 不可用"
-  exit 1
+check_root(){
+  [[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 用户运行${RESET}" && exit 1
 }
 
-# -------------------------------
-# 3. 目录结构
-# -------------------------------
-mkdir -p $BASE_DIR/{conf,uploads,database}
+install_env(){
+  echo -e "${YELLOW}▶ 安装系统依赖${RESET}"
+  apt update
+  apt install -y curl wget nginx ca-certificates gnupg lsb-release certbot python3-certbot-nginx
 
-# -------------------------------
-# 4. docker-compose.yml（关键修复）
-# -------------------------------
+  if ! command -v docker &>/dev/null; then
+    curl -fsSL https://get.docker.com | bash
+  fi
+
+  systemctl enable docker nginx
+  systemctl start docker nginx
+}
+
+install_sunpanel(){
+  read -p "请输入访问域名: " DOMAIN
+  read -p "请输入邮箱: " EMAIL
+
+  install_env
+
+  mkdir -p $BASE_DIR/{conf,uploads,database,backup}
+
 cat > $BASE_DIR/docker-compose.yml <<EOF
 version: "3.8"
-
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
@@ -66,26 +54,12 @@ services:
       - ./database:/app/database
 EOF
 
-# -------------------------------
-# 5. 启动容器
-# -------------------------------
-cd $BASE_DIR
-docker compose up -d
+  cd $BASE_DIR && docker compose up -d
 
-sleep 5
-
-# -------------------------------
-# 6. 配置 Nginx
-# -------------------------------
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/html;
-    }
-
     location / {
         return 301 https://\$host\$request_uri;
     }
@@ -98,33 +72,103 @@ server {
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
 
-    ssl_protocols TLSv1.2 TLSv1.3;
-
     location / {
         proxy_pass http://127.0.0.1:3002;
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
     }
 }
 EOF
 
-nginx -t && systemctl reload nginx
+  nginx -t && systemctl reload nginx
+  certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email
 
-# -------------------------------
-# 7. HTTPS 证书
-# -------------------------------
-apt install -y certbot python3-certbot-nginx
+  echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
+}
 
-certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email
+start_service(){
+  cd $BASE_DIR && docker compose up -d
+  echo -e "${GREEN}✔ 服务已启动${RESET}"
+}
 
-# -------------------------------
-# 8. 最终检查
-# -------------------------------
-echo
-echo "======================================"
-echo "🎉 部署完成（v1.1 稳定版）"
-echo "访问地址: https://$DOMAIN"
-echo "======================================"
-echo "首次访问请创建管理员账号"
+stop_service(){
+  cd $BASE_DIR && docker compose down
+  echo -e "${YELLOW}✔ 服务已停止${RESET}"
+}
+
+restart_service(){
+  cd $BASE_DIR && docker compose restart
+  echo -e "${GREEN}✔ 服务已重启${RESET}"
+}
+
+update_service(){
+  cd $BASE_DIR
+  docker compose pull
+  docker compose up -d
+  echo -e "${GREEN}✔ 更新完成（数据未丢失）${RESET}"
+}
+
+backup_db(){
+  mkdir -p $BACKUP_DIR
+  if [[ -f "$DB_FILE" ]]; then
+    cp "$DB_FILE" "$BACKUP_DIR/db_$(date +%F_%H-%M-%S).db"
+    echo -e "${GREEN}✔ 数据库已备份${RESET}"
+  else
+    echo -e "${RED}未找到数据库文件${RESET}"
+  fi
+}
+
+restore_db(){
+  echo "可用备份:"
+  ls $BACKUP_DIR
+  read -p "输入要恢复的文件名: " FILE
+  cp "$BACKUP_DIR/$FILE" "$DB_FILE"
+  docker compose restart
+  echo -e "${GREEN}✔ 数据库已恢复${RESET}"
+}
+
+uninstall_all(){
+  read -p "⚠️ 确认彻底卸载? [y/N]: " OK
+  [[ "$OK" =~ ^[Yy]$ ]] || return
+  docker compose down
+  rm -rf $BASE_DIR
+  rm -f /etc/nginx/conf.d/sun-panel.conf
+  systemctl reload nginx
+  echo -e "${RED}✔ 已卸载${RESET}"
+}
+
+menu(){
+  clear
+  echo "=================================="
+  echo " sun-panel 管理脚本 v1.2"
+  echo "=================================="
+  echo "1) 安装 sun-panel"
+  echo "2) 启动服务"
+  echo "3) 停止服务"
+  echo "4) 重启服务"
+  echo "5) 更新 sun-panel"
+  echo "6) 备份数据库"
+  echo "7) 恢复数据库"
+  echo "8) 卸载 sun-panel"
+  echo "0) 退出"
+  echo "=================================="
+}
+
+check_root
+while true; do
+  menu
+  read -p "请选择: " NUM
+  case $NUM in
+    1) install_sunpanel ;;
+    2) start_service ;;
+    3) stop_service ;;
+    4) restart_service ;;
+    5) update_service ;;
+    6) backup_db ;;
+    7) restore_db ;;
+    8) uninstall_all ;;
+    0) exit 0 ;;
+    *) echo "无效选择" ;;
+  esac
+  pause
+done

@@ -1,13 +1,13 @@
 #!/bin/bash
 # =====================================================
-# Sun-Panel-v2 菜单式一键部署脚本 v1.2.5
-# 支持多种 HTTPS 证书申请方式
+# Sun-Panel-v2 菜单式一键部署脚本 v1.2.6
+# 支持 HTTP 先行 + HTTPS 多方式申请 + 数据库备份
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
-DB_FILE="$BASE_DIR/database/database.db"
+DB_FILE="$BASE_DIR/conf/database/database.db"
 BACKUP_DIR="$BASE_DIR/backup"
-WEBROOT="/var/www/html"
+WEBROOT="/var/www/certbot"
 
 GREEN="\033[32m"
 RED="\033[31m"
@@ -26,8 +26,7 @@ check_root(){
 install_env(){
   echo -e "${YELLOW}▶ 安装系统依赖${RESET}"
   apt update
-  apt install -y curl wget nginx ca-certificates gnupg lsb-release \
-                 certbot python3-certbot-nginx
+  apt install -y curl wget nginx ca-certificates gnupg lsb-release software-properties-common
 
   if ! command -v docker &>/dev/null; then
     echo -e "${YELLOW}▶ 安装 Docker${RESET}"
@@ -47,7 +46,7 @@ fix_permissions(){
 }
 
 install_sunpanel(){
-  read -p "请输入访问域名: " DOMAIN
+  read -p "请输入访问域名 (如 panel.example.com): " DOMAIN
   read -p "请输入邮箱 (证书使用，可稍后申请): " EMAIL
 
   install_env
@@ -83,6 +82,10 @@ server {
         proxy_pass http://127.0.0.1:3002;
         proxy_set_header Host \$host;
     }
+
+    location /.well-known/acme-challenge/ {
+        root $WEBROOT;
+    }
 }
 EOF
 
@@ -95,7 +98,7 @@ EOF
 
   echo -e "${GREEN}✔ 部署完成（HTTP 可先访问）${RESET}"
   echo -e "面板访问地址: http://$DOMAIN 或 http://服务器IP:3002"
-  echo -e "⚠️ HTTPS 证书未申请，可使用菜单申请或单独运行 certbot"
+  echo -e "⚠️ HTTPS 证书未申请，可使用菜单申请"
   echo -e "▶ 查看容器日志: docker compose logs -f"
 }
 
@@ -130,6 +133,7 @@ request_https(){
   echo "请选择证书申请方式:"
   echo "1) Webroot (HTTP 验证)"
   echo "2) DNS 验证 (Cloudflare / Aliyun 等)"
+  echo "3) Let's Encrypt 官方方式 (自动 Nginx 配置)"
   echo "0) 取消"
   read -p "选择: " METHOD
 
@@ -141,21 +145,39 @@ request_https(){
       echo "▶ 使用 Webroot 方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$BASE_DIR/nginx/certbot:/var/www/certbot" \
+        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
         certbot/certbot certonly \
-        --webroot -w /var/www/certbot \
+        --webroot -w $WEBROOT \
         -d "$DOMAIN" \
         --email "$EMAIL" --agree-tos --no-eff-email
       ;;
     2)
-      echo "▶ 使用 DNS 方式申请证书，请确认已配置 API KEY..."
-      echo "示例：Cloudflare"
+      CF_INI="$BASE_DIR/certbot/cloudflare.ini"
+      if [[ ! -f "$CF_INI" ]]; then
+        echo -e "${RED}⚠️ Cloudflare API 凭证文件不存在！请创建 $CF_INI 并填写 API TOKEN${RESET}"
+        echo "示例内容："
+        echo "dns_cloudflare_api_token = 你的_API_TOKEN"
+        return
+      fi
+      echo "▶ 使用 DNS 方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
-        -v "$BASE_DIR/nginx/certbot:/var/www/certbot" \
+        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
+        -v "$CF_INI:/cloudflare.ini:ro" \
         certbot/dns-cloudflare certonly \
         --dns-cloudflare \
-        --dns-cloudflare-credentials /path/to/cloudflare.ini \
+        --dns-cloudflare-credentials /cloudflare.ini \
+        -d "$DOMAIN" \
+        --email "$EMAIL" --agree-tos --no-eff-email
+      ;;
+    3)
+      echo "▶ 使用 Let's Encrypt 官方方式申请证书..."
+      docker run -it --rm \
+        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
+        -v "$BASE_DIR/nginx/certbot:$WEBROOT" \
+        -v "/etc/nginx:/etc/nginx" \
+        certbot/certbot run \
+        --nginx \
         -d "$DOMAIN" \
         --email "$EMAIL" --agree-tos --no-eff-email
       ;;
@@ -169,23 +191,28 @@ request_https(){
       ;;
   esac
 
-  echo "▶ 重载 Nginx"
-  nginx -t && systemctl reload nginx && echo "✔ HTTPS 证书申请完成"
+  echo "▶ 测试 Nginx 配置并重载..."
+  if nginx -t; then
+    systemctl reload nginx
+    echo -e "${GREEN}✔ HTTPS 证书申请完成${RESET}"
+  else
+    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查证书和配置文件${RESET}"
+  fi
 }
 
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2.5"
+  echo " Sun-Panel 管理脚本 v1.2.6"
   echo "=================================="
-  echo "1) 一键安装 sun-panel"
+  echo "1) 一键安装 Sun-Panel"
   echo "2) 启动服务"
   echo "3) 停止服务"
   echo "4) 重启服务"
-  echo "5) 更新 sun-panel"
+  echo "5) 更新 Sun-Panel"
   echo "6) 备份数据库"
   echo "7) 恢复数据库"
-  echo "8) 卸载 sun-panel"
+  echo "8) 卸载 Sun-Panel"
   echo "9) 申请/更新 HTTPS 证书"
   echo "0) 退出"
   echo "=================================="

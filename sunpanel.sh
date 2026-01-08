@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 菜单式一键部署脚本 v1.2.2
-# 稳定增强版（修复 set -e 静默退出）
+# sun-panel-v2 菜单式一键部署脚本 v1.2.3
+# 稳定增强版（修复 Docker Compose 卡死问题）
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
@@ -38,6 +38,14 @@ install_env(){
   systemctl start docker nginx
 }
 
+fix_permissions(){
+  echo -e "${YELLOW}▶ 修复挂载目录权限${RESET}"
+  mkdir -p "$BASE_DIR"/{conf,uploads,database,backup}
+  sudo chown -R $USER:$USER "$BASE_DIR"
+  sudo chmod -R 755 "$BASE_DIR"
+  mkdir -p "$WEBROOT"
+}
+
 install_sunpanel(){
   read -p "请输入访问域名: " DOMAIN
   read -p "请输入邮箱 (证书使用): " EMAIL
@@ -48,14 +56,10 @@ install_sunpanel(){
   fi
 
   install_env
+  fix_permissions
 
-  mkdir -p $BASE_DIR/{conf,uploads,database,backup}
-  mkdir -p $WEBROOT
-
-  echo -e "${YELLOW}▶ 启动 Sun-Panel 容器${RESET}"
-
+  echo -e "${YELLOW}▶ 创建 docker-compose.yml${RESET}"
 cat > $BASE_DIR/docker-compose.yml <<EOF
-version: "3.8"
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
@@ -70,12 +74,10 @@ services:
 EOF
 
   cd $BASE_DIR
+  echo -e "${YELLOW}▶ 启动容器（后台）${RESET}"
   docker compose up -d
 
-  sleep 5
-
-  echo -e "${YELLOW}▶ 配置 HTTP Nginx${RESET}"
-
+  echo -e "${YELLOW}▶ 配置 Nginx HTTP${RESET}"
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
@@ -92,28 +94,18 @@ server {
 }
 EOF
 
-  if ! nginx -t; then
-    echo -e "${RED}Nginx 配置测试失败${RESET}"
-    return
-  fi
-
-  systemctl reload nginx
+  nginx -t && systemctl reload nginx
 
   echo -e "${YELLOW}▶ 申请 HTTPS 证书${RESET}"
-
   certbot certonly \
     --webroot \
     -w $WEBROOT \
     -d "$DOMAIN" \
     --email "$EMAIL" \
     --agree-tos \
-    --no-eff-email || {
-      echo -e "${RED}证书申请失败，请检查域名解析${RESET}"
-      return
-    }
+    --no-eff-email || echo -e "${RED}⚠️ 证书申请失败，请检查域名解析${RESET}"
 
-  echo -e "${YELLOW}▶ 配置 HTTPS Nginx${RESET}"
-
+  echo -e "${YELLOW}▶ 配置 Nginx HTTPS${RESET}"
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
@@ -141,60 +133,27 @@ EOF
   if nginx -t; then
     systemctl reload nginx
     echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
+    echo -e "${YELLOW}▶ 查看容器日志: docker compose logs -f${RESET}"
   else
-    echo -e "${RED}HTTPS Nginx 配置失败${RESET}"
+    echo -e "${RED}⚠️ HTTPS Nginx 配置失败${RESET}"
   fi
 }
 
-start_service(){
-  cd $BASE_DIR && docker compose up -d
-  echo -e "${GREEN}✔ 服务已启动${RESET}"
-}
-
-stop_service(){
-  cd $BASE_DIR && docker compose down
-  echo -e "${YELLOW}✔ 服务已停止${RESET}"
-}
-
-restart_service(){
-  cd $BASE_DIR && docker compose restart
-  echo -e "${GREEN}✔ 服务已重启${RESET}"
-}
-
-update_service(){
-  cd $BASE_DIR
-  docker compose pull
-  docker compose up -d
-  echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"
-}
+start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
+stop_service(){ cd $BASE_DIR && docker compose down && echo -e "${YELLOW}✔ 服务已停止${RESET}"; }
+restart_service(){ cd $BASE_DIR && docker compose restart && echo -e "${GREEN}✔ 服务已重启${RESET}"; }
+update_service(){ cd $BASE_DIR && docker compose pull && docker compose up -d && echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"; }
 
 backup_db(){
   mkdir -p $BACKUP_DIR
-  if [[ -f "$DB_FILE" ]]; then
-    cp "$DB_FILE" "$BACKUP_DIR/db_$(date +%F_%H-%M-%S).db"
-    echo -e "${GREEN}✔ 数据库已备份${RESET}"
-  else
-    echo -e "${RED}未找到数据库文件${RESET}"
-  fi
+  [[ -f "$DB_FILE" ]] && cp "$DB_FILE" "$BACKUP_DIR/db_$(date +%F_%H-%M-%S).db" && echo -e "${GREEN}✔ 数据库已备份${RESET}" || echo -e "${RED}未找到数据库文件${RESET}"
 }
 
 restore_db(){
-  if [[ ! -d "$BACKUP_DIR" ]]; then
-    echo -e "${RED}未找到备份目录${RESET}"
-    return
-  fi
-
-  echo "可用备份:"
-  ls $BACKUP_DIR
+  [[ ! -d "$BACKUP_DIR" ]] && { echo -e "${RED}未找到备份目录${RESET}"; return; }
+  echo "可用备份:"; ls $BACKUP_DIR
   read -p "输入要恢复的文件名: " FILE
-
-  if [[ -f "$BACKUP_DIR/$FILE" ]]; then
-    cp "$BACKUP_DIR/$FILE" "$DB_FILE"
-    docker compose restart
-    echo -e "${GREEN}✔ 数据库已恢复${RESET}"
-  else
-    echo -e "${RED}备份文件不存在${RESET}"
-  fi
+  [[ -f "$BACKUP_DIR/$FILE" ]] && cp "$BACKUP_DIR/$FILE" "$DB_FILE" && docker compose restart && echo -e "${GREEN}✔ 数据库已恢复${RESET}" || echo -e "${RED}备份文件不存在${RESET}"
 }
 
 uninstall_all(){
@@ -210,7 +169,7 @@ uninstall_all(){
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2.2"
+  echo " sun-panel 管理脚本 v1.2.3"
   echo "=================================="
   echo "1) 一键安装 sun-panel"
   echo "2) 启动服务"

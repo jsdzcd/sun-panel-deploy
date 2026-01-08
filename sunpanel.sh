@@ -1,12 +1,16 @@
 #!/bin/bash
 # =====================================================
-# Sun-Panel-v2 菜单式一键部署脚本 v1.2.6
+# Sun-Panel-v2 菜单式一键部署脚本 v1.2.9
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
 DB_FILE="$BASE_DIR/conf/database/database.db"
 BACKUP_DIR="$BASE_DIR/backup"
 WEBROOT="$BASE_DIR/nginx/certbot"
+
+# 外网端口配置
+HTTP_PORT=3002
+HTTPS_PORT=3443
 
 GREEN="\033[32m"
 RED="\033[31m"
@@ -59,7 +63,7 @@ services:
     container_name: sun-panel-v2
     restart: always
     ports:
-      - "127.0.0.1:3002:3002"
+      - "${HTTP_PORT}:3002"
     volumes:
       - ./conf:/app/conf
       - ./uploads:/app/uploads
@@ -70,34 +74,43 @@ EOF
   echo -e "${YELLOW}▶ 启动容器（后台）${RESET}"
   docker compose up -d
 
-  echo -e "${YELLOW}▶ 配置 Nginx HTTP${RESET}"
+  echo -e "${YELLOW}▶ 配置 Nginx HTTP（自定义端口）${RESET}"
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
-    listen 80;
+    listen ${HTTP_PORT};
     server_name $DOMAIN;
+    return 301 https://\$host:${HTTPS_PORT}\$request_uri;
+}
+
+server {
+    listen ${HTTPS_PORT} ssl http2;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
 
     location / {
         proxy_pass http://127.0.0.1:3002;
         proxy_set_header Host \$host;
-    }
-
-    location /.well-known/acme-challenge/ {
-        root $WEBROOT;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 
   if nginx -t; then
     systemctl reload nginx
-    echo -e "${GREEN}✔ Nginx HTTP 配置完成${RESET}"
+    echo -e "${GREEN}✔ Nginx 配置完成${RESET}"
   else
-    echo -e "${RED}⚠️ Nginx 配置失败，请检查${RESET}"
+    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查${RESET}"
   fi
 
-  echo -e "${GREEN}✔ 部署完成（HTTP 可先访问）${RESET}"
-  echo -e "面板访问地址: http://$DOMAIN 或 http://服务器IP:3002"
-  echo -e "⚠️ HTTPS 证书未申请，可使用菜单申请"
-  echo -e "▶ 查看容器日志: docker compose logs -f"
+  echo -e "${GREEN}✔ 部署完成（HTTP ${HTTP_PORT} → HTTPS ${HTTPS_PORT} 可访问）${RESET}"
 }
 
 start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
@@ -108,10 +121,9 @@ update_service(){
   cd $BASE_DIR
   echo -e "${YELLOW}▶ 拉取最新镜像${RESET}"
   docker compose pull
-  echo -e "${YELLOW}▶ 停止旧容器并启动最新版本${RESET}"
+  echo -e "${YELLOW}▶ 重启容器${RESET}"
   docker compose up -d
-  echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"
-  echo -e "▶ 查看容器日志: docker compose logs -f"
+  echo -e "${GREEN}✔ 更新完成${RESET}"
 }
 
 backup_db(){
@@ -140,7 +152,7 @@ request_https(){
   echo "请选择证书申请方式:"
   echo "1) Webroot (HTTP 验证)"
   echo "2) DNS 验证 (Cloudflare / Aliyun 等)"
-  echo "3) Let's Encrypt 官方方式 (自动 Nginx 配置)"
+  echo "3) Let's Encrypt 官方方式"
   echo "0) 取消"
   read -p "选择: " METHOD
 
@@ -149,7 +161,7 @@ request_https(){
 
   case $METHOD in
     1)
-      echo "▶ 使用 Webroot 方式申请证书..."
+      echo "▶ Webroot 申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
         -v "$WEBROOT:$WEBROOT" \
@@ -161,12 +173,10 @@ request_https(){
     2)
       CF_INI="$BASE_DIR/certbot/cloudflare.ini"
       if [[ ! -f "$CF_INI" ]]; then
-        echo -e "${RED}⚠️ Cloudflare API 凭证文件不存在！请创建 $CF_INI 并填写 API TOKEN${RESET}"
-        echo "示例内容："
-        echo "dns_cloudflare_api_token = 你的_API_TOKEN"
+        echo -e "${RED}⚠️ Cloudflare API 文件不存在！请创建 $CF_INI${RESET}"
         return
       fi
-      echo "▶ 使用 DNS 方式申请证书..."
+      echo "▶ DNS 方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
         -v "$WEBROOT:$WEBROOT" \
@@ -178,7 +188,7 @@ request_https(){
         --email "$EMAIL" --agree-tos --no-eff-email
       ;;
     3)
-      echo "▶ 使用 Let's Encrypt 官方方式申请证书..."
+      echo "▶ Let's Encrypt 官方方式申请证书..."
       docker run -it --rm \
         -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
         -v "$WEBROOT:$WEBROOT" \
@@ -198,54 +208,57 @@ request_https(){
       ;;
   esac
 
-  echo "▶ 测试 Nginx 配置并重载..."
+  echo "▶ 自动生成强制 HTTPS Nginx 配置..."
+cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
+server {
+    listen ${HTTP_PORT};
+    server_name $DOMAIN;
+    return 301 https://\$host:${HTTPS_PORT}\$request_uri;
+}
+
+server {
+    listen ${HTTPS_PORT} ssl http2;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
   if nginx -t; then
     systemctl reload nginx
-    echo -e "${GREEN}✔ HTTPS 证书申请完成${RESET}"
+    echo -e "${GREEN}✔ HTTPS 证书申请成功，HTTP 自动重定向到 HTTPS${RESET}"
   else
-    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查证书和配置文件${RESET}"
+    echo -e "${RED}⚠️ Nginx 配置测试失败，请检查${RESET}"
   fi
 }
 
 check_status(){
   echo "==================== 系统状态检测 ===================="
-  # Docker 服务状态
-  if systemctl is-active --quiet docker; then
-    echo -e "Docker 服务状态: ${GREEN}运行${RESET}"
-  else
-    echo -e "Docker 服务状态: ${RED}未运行${RESET}"
-  fi
+  systemctl is-active --quiet docker && echo -e "Docker 服务状态: ${GREEN}运行${RESET}" || echo -e "Docker 服务状态: ${RED}未运行${RESET}"
+  docker ps --format '{{.Names}}' | grep -q "sun-panel-v2" && echo -e "Sun-Panel 容器: ${GREEN}运行${RESET}" || echo -e "Sun-Panel 容器: ${RED}未运行${RESET}"
+  systemctl is-active --quiet nginx && echo -e "Nginx 服务: ${GREEN}运行${RESET}" || echo -e "Nginx 服务: ${RED}未运行${RESET}"
 
-  # Sun-Panel 容器状态
-  if docker ps --format '{{.Names}}' | grep -q "sun-panel-v2"; then
-    echo -e "Sun-Panel 容器: ${GREEN}运行${RESET}"
-  else
-    echo -e "Sun-Panel 容器: ${RED}未运行${RESET}"
-  fi
+  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$HTTP_PORT || echo "000")
+  [[ "$HTTP_STATUS" == "200" ]] && echo -e "HTTP 面板访问: ${GREEN}可访问${RESET}" || echo -e "HTTP 面板访问: ${RED}不可访问${RESET}"
 
-  # Nginx 服务状态
-  if systemctl is-active --quiet nginx; then
-    echo -e "Nginx 服务: ${GREEN}运行${RESET}"
-  else
-    echo -e "Nginx 服务: ${RED}未运行${RESET}"
-  fi
-
-  # HTTP 面板访问
-  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3002 || echo "000")
-  if [[ "$HTTP_STATUS" == "200" ]]; then
-    echo -e "HTTP 面板访问: ${GREEN}可访问${RESET}"
-  else
-    echo -e "HTTP 面板访问: ${RED}不可访问${RESET}"
-  fi
-
-  # HTTPS 证书检测
   CERT_FILE=$(find "$BASE_DIR/nginx/certs" -name "fullchain.pem" | head -n1)
   if [[ -f "$CERT_FILE" ]]; then
-    if openssl x509 -checkend 86400 -noout -in "$CERT_FILE"; then
-      echo -e "HTTPS 证书: ${GREEN}已申请并有效${RESET}"
-    else
-      echo -e "HTTPS 证书: ${YELLOW}已申请但即将过期${RESET}"
-    fi
+    openssl x509 -checkend 86400 -noout -in "$CERT_FILE" &>/dev/null \
+      && echo -e "HTTPS 证书: ${GREEN}已申请并有效${RESET}" \
+      || echo -e "HTTPS 证书: ${YELLOW}已申请但即将过期${RESET}"
   else
     echo -e "HTTPS 证书: ${RED}未申请${RESET}"
   fi
@@ -255,7 +268,7 @@ check_status(){
 menu(){
   clear
   echo "=================================="
-  echo " Sun-Panel 管理脚本 v1.2.6"
+  echo " Sun-Panel 管理脚本 v1.2.9"
   echo "=================================="
   echo "1) 一键安装 Sun-Panel"
   echo "2) 启动服务"

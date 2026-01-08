@@ -3,7 +3,7 @@
 #================================================================
 #   System Required: CentOS 7+/Ubuntu 18+/Debian 10+
 #   Description: Sun-Panel 一键安装脚本
-#   Author: Your Name
+#   Author: 小宝弟
 #   Github: https://github.com/hslr-s/sun-panel
 #================================================================
 

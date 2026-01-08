@@ -1,10 +1,8 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 菜单式一键部署脚本 v1.2.1
-# 修复证书顺序 / HTTPS 稳定版
+# sun-panel-v2 菜单式一键部署脚本 v1.2.2
+# 稳定增强版（修复 set -e 静默退出）
 # =====================================================
-
-set -e
 
 BASE_DIR="/opt/sun-panel-v2"
 DB_FILE="$BASE_DIR/database/database.db"
@@ -19,7 +17,10 @@ RESET="\033[0m"
 pause(){ read -p "按 Enter 键继续..." ; }
 
 check_root(){
-  [[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 用户运行${RESET}" && exit 1
+  if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}请使用 root 用户运行${RESET}"
+    exit 1
+  fi
 }
 
 install_env(){
@@ -29,6 +30,7 @@ install_env(){
                  certbot python3-certbot-nginx
 
   if ! command -v docker &>/dev/null; then
+    echo -e "${YELLOW}▶ 安装 Docker${RESET}"
     curl -fsSL https://get.docker.com | bash
   fi
 
@@ -40,14 +42,18 @@ install_sunpanel(){
   read -p "请输入访问域名: " DOMAIN
   read -p "请输入邮箱 (证书使用): " EMAIL
 
+  if [[ -z "$DOMAIN" || -z "$EMAIL" ]]; then
+    echo -e "${RED}域名和邮箱不能为空${RESET}"
+    return
+  fi
+
   install_env
 
   mkdir -p $BASE_DIR/{conf,uploads,database,backup}
   mkdir -p $WEBROOT
 
-  # -----------------------------
-  # Docker Compose
-  # -----------------------------
+  echo -e "${YELLOW}▶ 启动 Sun-Panel 容器${RESET}"
+
 cat > $BASE_DIR/docker-compose.yml <<EOF
 version: "3.8"
 services:
@@ -68,9 +74,8 @@ EOF
 
   sleep 5
 
-  # -----------------------------
-  # Step 1: HTTP-only nginx
-  # -----------------------------
+  echo -e "${YELLOW}▶ 配置 HTTP Nginx${RESET}"
+
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
@@ -87,12 +92,14 @@ server {
 }
 EOF
 
-  nginx -t && systemctl reload nginx
+  if ! nginx -t; then
+    echo -e "${RED}Nginx 配置测试失败${RESET}"
+    return
+  fi
 
-  # -----------------------------
-  # Step 2: Certbot
-  # -----------------------------
-  echo -e "${YELLOW}▶ 申请 HTTPS 证书...${RESET}"
+  systemctl reload nginx
+
+  echo -e "${YELLOW}▶ 申请 HTTPS 证书${RESET}"
 
   certbot certonly \
     --webroot \
@@ -100,11 +107,13 @@ EOF
     -d "$DOMAIN" \
     --email "$EMAIL" \
     --agree-tos \
-    --no-eff-email
+    --no-eff-email || {
+      echo -e "${RED}证书申请失败，请检查域名解析${RESET}"
+      return
+    }
 
-  # -----------------------------
-  # Step 3: HTTPS nginx
-  # -----------------------------
+  echo -e "${YELLOW}▶ 配置 HTTPS Nginx${RESET}"
+
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
@@ -129,9 +138,12 @@ server {
 }
 EOF
 
-  nginx -t && systemctl reload nginx
-
-  echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
+  if nginx -t; then
+    systemctl reload nginx
+    echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
+  else
+    echo -e "${RED}HTTPS Nginx 配置失败${RESET}"
+  fi
 }
 
 start_service(){
@@ -167,12 +179,22 @@ backup_db(){
 }
 
 restore_db(){
+  if [[ ! -d "$BACKUP_DIR" ]]; then
+    echo -e "${RED}未找到备份目录${RESET}"
+    return
+  fi
+
   echo "可用备份:"
   ls $BACKUP_DIR
   read -p "输入要恢复的文件名: " FILE
-  cp "$BACKUP_DIR/$FILE" "$DB_FILE"
-  docker compose restart
-  echo -e "${GREEN}✔ 数据库已恢复${RESET}"
+
+  if [[ -f "$BACKUP_DIR/$FILE" ]]; then
+    cp "$BACKUP_DIR/$FILE" "$DB_FILE"
+    docker compose restart
+    echo -e "${GREEN}✔ 数据库已恢复${RESET}"
+  else
+    echo -e "${RED}备份文件不存在${RESET}"
+  fi
 }
 
 uninstall_all(){
@@ -188,7 +210,7 @@ uninstall_all(){
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2.1"
+  echo " sun-panel 管理脚本 v1.2.2"
   echo "=================================="
   echo "1) 一键安装 sun-panel"
   echo "2) 启动服务"

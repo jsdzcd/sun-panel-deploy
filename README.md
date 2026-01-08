@@ -8,6 +8,7 @@
 完整功能 - 安装/卸载/更新/日志/状态查看
 
 📦 使用方法：
+
 方式一：一键安装
 bash# 下载并执行
 wget -O sun-panel-install.sh https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/install.sh && chmod +x sun-panel-install.sh && ./sun-panel-install.sh

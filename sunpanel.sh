@@ -1,7 +1,7 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 菜单式一键部署脚本 v1.2.4
-# 稳定增强版（容器启动 + 非阻塞 HTTPS）
+# Sun-Panel-v2 菜单式一键部署脚本 v1.2.5
+# 支持多种 HTTPS 证书申请方式
 # =====================================================
 
 BASE_DIR="/opt/sun-panel-v2"
@@ -40,9 +40,9 @@ install_env(){
 
 fix_permissions(){
   echo -e "${YELLOW}▶ 修复挂载目录权限${RESET}"
-  mkdir -p "$BASE_DIR"/{conf,uploads,database,backup}
-  sudo chown -R $USER:$USER "$BASE_DIR"
-  sudo chmod -R 755 "$BASE_DIR"
+  mkdir -p "$BASE_DIR"/{conf,uploads,database,backup,nginx/certs,nginx/certbot,nginx/conf.d}
+  chown -R $USER:$USER "$BASE_DIR"
+  chmod -R 755 "$BASE_DIR"
   mkdir -p "$WEBROOT"
 }
 
@@ -55,6 +55,7 @@ install_sunpanel(){
 
   echo -e "${YELLOW}▶ 创建 docker-compose.yml${RESET}"
 cat > $BASE_DIR/docker-compose.yml <<EOF
+version: "3.8"
 services:
   sun-panel:
     image: ghcr.io/75412701/sun-panel-v2:latest
@@ -92,10 +93,10 @@ EOF
     echo -e "${RED}⚠️ Nginx 配置失败，请检查${RESET}"
   fi
 
-  echo -e "${YELLOW}▶ 部署完成（HTTP 可先访问）${RESET}"
-  echo -e "${GREEN}✔ 面板访问地址: http://$DOMAIN 或 http://服务器IP:3002${RESET}"
-  echo -e "${YELLOW}⚠️ HTTPS 证书未申请，需单独执行 certbot 或使用菜单申请${RESET}"
-  echo -e "${YELLOW}▶ 查看容器日志: docker compose logs -f${RESET}"
+  echo -e "${GREEN}✔ 部署完成（HTTP 可先访问）${RESET}"
+  echo -e "面板访问地址: http://$DOMAIN 或 http://服务器IP:3002"
+  echo -e "⚠️ HTTPS 证书未申请，可使用菜单申请或单独运行 certbot"
+  echo -e "▶ 查看容器日志: docker compose logs -f"
 }
 
 start_service(){ cd $BASE_DIR && docker compose up -d && echo -e "${GREEN}✔ 服务已启动${RESET}"; }
@@ -125,10 +126,57 @@ uninstall_all(){
   echo -e "${RED}✔ 已卸载${RESET}"
 }
 
+request_https(){
+  echo "请选择证书申请方式:"
+  echo "1) Webroot (HTTP 验证)"
+  echo "2) DNS 验证 (Cloudflare / Aliyun 等)"
+  echo "0) 取消"
+  read -p "选择: " METHOD
+
+  read -p "请输入域名: " DOMAIN
+  read -p "请输入邮箱: " EMAIL
+
+  case $METHOD in
+    1)
+      echo "▶ 使用 Webroot 方式申请证书..."
+      docker run -it --rm \
+        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
+        -v "$BASE_DIR/nginx/certbot:/var/www/certbot" \
+        certbot/certbot certonly \
+        --webroot -w /var/www/certbot \
+        -d "$DOMAIN" \
+        --email "$EMAIL" --agree-tos --no-eff-email
+      ;;
+    2)
+      echo "▶ 使用 DNS 方式申请证书，请确认已配置 API KEY..."
+      echo "示例：Cloudflare"
+      docker run -it --rm \
+        -v "$BASE_DIR/nginx/certs:/etc/letsencrypt/live" \
+        -v "$BASE_DIR/nginx/certbot:/var/www/certbot" \
+        certbot/dns-cloudflare certonly \
+        --dns-cloudflare \
+        --dns-cloudflare-credentials /path/to/cloudflare.ini \
+        -d "$DOMAIN" \
+        --email "$EMAIL" --agree-tos --no-eff-email
+      ;;
+    0)
+      echo "取消申请"
+      return
+      ;;
+    *)
+      echo "无效选择"
+      return
+      ;;
+  esac
+
+  echo "▶ 重载 Nginx"
+  nginx -t && systemctl reload nginx && echo "✔ HTTPS 证书申请完成"
+}
+
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2.4"
+  echo " sun-panel 管理脚本 v1.2.5"
   echo "=================================="
   echo "1) 一键安装 sun-panel"
   echo "2) 启动服务"
@@ -138,6 +186,7 @@ menu(){
   echo "6) 备份数据库"
   echo "7) 恢复数据库"
   echo "8) 卸载 sun-panel"
+  echo "9) 申请/更新 HTTPS 证书"
   echo "0) 退出"
   echo "=================================="
 }
@@ -155,6 +204,7 @@ while true; do
     6) backup_db ;;
     7) restore_db ;;
     8) uninstall_all ;;
+    9) request_https ;;
     0) exit 0 ;;
     *) echo "无效选择" ;;
   esac

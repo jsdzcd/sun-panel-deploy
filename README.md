@@ -10,11 +10,14 @@
 📦 使用方法：
 方式一：一键安装
 bash# 下载并执行
-wget -O sun-panel-install.sh https://raw.githubusercontent.com/你的用户名/sun-panel-deploy/main/install.sh && chmod +x sun-panel-install.sh && ./sun-panel-install.sh
+wget -O sun-panel-install.sh https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/install.sh && chmod +x sun-panel-install.sh && ./sun-panel-install.sh
+
 方式二：curl 方式
-bashcurl -fsSL https://raw.githubusercontent.com/你的用户名/sun-panel-deploy/main/install.sh | bash
+bashcurl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/install.sh | bash
+
 方式三：交互式菜单
 bashbash sun-panel-install.sh
+
 方式四：直接安装
 bashbash sun-panel-install.sh install
 📝 GitHub 使用说明：

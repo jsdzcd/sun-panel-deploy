@@ -1,11 +1,15 @@
 #!/bin/bash
 # =====================================================
-# sun-panel-v2 菜单式管理脚本 v1.2
+# sun-panel-v2 菜单式一键部署脚本 v1.2.1
+# 修复证书顺序 / HTTPS 稳定版
 # =====================================================
+
+set -e
 
 BASE_DIR="/opt/sun-panel-v2"
 DB_FILE="$BASE_DIR/database/database.db"
 BACKUP_DIR="$BASE_DIR/backup"
+WEBROOT="/var/www/html"
 
 GREEN="\033[32m"
 RED="\033[31m"
@@ -21,7 +25,8 @@ check_root(){
 install_env(){
   echo -e "${YELLOW}▶ 安装系统依赖${RESET}"
   apt update
-  apt install -y curl wget nginx ca-certificates gnupg lsb-release certbot python3-certbot-nginx
+  apt install -y curl wget nginx ca-certificates gnupg lsb-release \
+                 certbot python3-certbot-nginx
 
   if ! command -v docker &>/dev/null; then
     curl -fsSL https://get.docker.com | bash
@@ -33,12 +38,16 @@ install_env(){
 
 install_sunpanel(){
   read -p "请输入访问域名: " DOMAIN
-  read -p "请输入邮箱: " EMAIL
+  read -p "请输入邮箱 (证书使用): " EMAIL
 
   install_env
 
   mkdir -p $BASE_DIR/{conf,uploads,database,backup}
+  mkdir -p $WEBROOT
 
+  # -----------------------------
+  # Docker Compose
+  # -----------------------------
 cat > $BASE_DIR/docker-compose.yml <<EOF
 version: "3.8"
 services:
@@ -54,15 +63,53 @@ services:
       - ./database:/app/database
 EOF
 
-  cd $BASE_DIR && docker compose up -d
+  cd $BASE_DIR
+  docker compose up -d
 
+  sleep 5
+
+  # -----------------------------
+  # Step 1: HTTP-only nginx
+  # -----------------------------
 cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
-    location / {
-        return 301 https://\$host\$request_uri;
+
+    location /.well-known/acme-challenge/ {
+        root $WEBROOT;
     }
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_set_header Host \$host;
+    }
+}
+EOF
+
+  nginx -t && systemctl reload nginx
+
+  # -----------------------------
+  # Step 2: Certbot
+  # -----------------------------
+  echo -e "${YELLOW}▶ 申请 HTTPS 证书...${RESET}"
+
+  certbot certonly \
+    --webroot \
+    -w $WEBROOT \
+    -d "$DOMAIN" \
+    --email "$EMAIL" \
+    --agree-tos \
+    --no-eff-email
+
+  # -----------------------------
+  # Step 3: HTTPS nginx
+  # -----------------------------
+cat > /etc/nginx/conf.d/sun-panel.conf <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
 }
 
 server {
@@ -71,6 +118,8 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     location / {
         proxy_pass http://127.0.0.1:3002;
@@ -81,7 +130,6 @@ server {
 EOF
 
   nginx -t && systemctl reload nginx
-  certbot --nginx -d "$DOMAIN" --email "$EMAIL" --agree-tos --no-eff-email
 
   echo -e "${GREEN}✔ 安装完成: https://$DOMAIN${RESET}"
 }
@@ -105,7 +153,7 @@ update_service(){
   cd $BASE_DIR
   docker compose pull
   docker compose up -d
-  echo -e "${GREEN}✔ 更新完成（数据未丢失）${RESET}"
+  echo -e "${GREEN}✔ 更新完成（数据保留）${RESET}"
 }
 
 backup_db(){
@@ -140,9 +188,9 @@ uninstall_all(){
 menu(){
   clear
   echo "=================================="
-  echo " sun-panel 管理脚本 v1.2"
+  echo " sun-panel 管理脚本 v1.2.1"
   echo "=================================="
-  echo "1) 安装 sun-panel"
+  echo "1) 一键安装 sun-panel"
   echo "2) 启动服务"
   echo "3) 停止服务"
   echo "4) 重启服务"

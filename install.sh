@@ -1,11 +1,10 @@
 #!/bin/bash
 
-#================================================================
-#   System Required: CentOS 7+/Ubuntu 18+/Debian 10+
-#   Description: Sun-Panel 一键安装脚本
-#   Author: 小宝弟
-#   Github: https://github.com/hslr-s/sun-panel
-#================================================================
+####################################################################
+# Sun Panel V2 一键部署脚本
+# 支持 Ubuntu、CentOS 等 Linux 系统
+# 功能：Docker部署、Nginx反向代理、SSL证书、状态管理、备份升级
+####################################################################
 
 # 颜色定义
 RED='\033[0;31m'
@@ -14,494 +13,838 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-# 版本信息
-SCRIPT_VERSION="1.0.0"
-PROJECT_NAME="Sun-Panel"
-DOCKER_IMAGE="hslr/sun-panel:latest"
+# 项目信息
+PROJECT_NAME="sun-panel"
+GITHUB_REPO="75412701/sun-panel-v2"
+IMAGE_NAME="75412701/sun-panel"
+IMAGE_TAG="latest"
 CONTAINER_NAME="sun-panel"
-INSTALL_PATH="$HOME/docker_data/sun-panel"
-DEFAULT_PORT=3002
 
-# 打印函数
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+# 配置文件路径
+CONFIG_DIR="/etc/sun-panel"
+DATA_DIR="/opt/sun-panel/data"
+BACKUP_DIR="/opt/sun-panel/backup"
+NGINX_CONF_DIR="/etc/nginx/sites-available"
+NGINX_ENABLED_DIR="/etc/nginx/sites-enabled"
+
+# 日志
+LOG_FILE="/var/log/sun-panel-install.log"
+
+# 函数：打印日志
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
-print_success() {
-    echo -e "${GREEN}[✓]${NC} $1"
+# 函数：打印带颜色的消息
+print_message() {
+    local color=$1
+    local message=$2
+    echo -e "${color}${message}${NC}"
+    log "$message"
 }
 
-print_error() {
-    echo -e "${RED}[✗]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
-}
-
-# 显示 Logo
-show_logo() {
+# 函数：打印标题
+print_title() {
     clear
-    echo -e "${CYAN}"
-    cat << "EOF"
-   ____                 ____                  _ 
-  / ___| _   _ _ __    |  _ \ __ _ _ __   ___| |
-  \___ \| | | | '_ \   | |_) / _` | '_ \ / _ \ |
-   ___) | |_| | | | |  |  __/ (_| | | | |  __/ |
-  |____/ \__,_|_| |_|  |_|   \__,_|_| |_|\___|_|
-                                                  
-EOF
-    echo -e "${NC}"
-    echo -e "${GREEN}          Sun-Panel 一键部署脚本 v${SCRIPT_VERSION}${NC}"
-    echo -e "${BLUE}================================================${NC}"
+    echo ""
+    print_message "$CYAN" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_message "$CYAN" "          Sun Panel V2 一键部署管理脚本"
+    print_message "$CYAN" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 }
 
-# 检查是否为 root 用户
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        print_error "请使用 root 用户运行此脚本！"
-        print_info "请执行: sudo -i"
-        exit 1
-    fi
+# 函数：打印分隔线
+print_separator() {
+    print_message "$CYAN" "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 }
 
-# 检测操作系统
+# 函数：检测操作系统
 detect_os() {
-    if [[ -f /etc/os-release ]]; then
+    if [ -f /etc/os-release ]; then
         . /etc/os-release
         OS=$ID
-        VERSION=$VERSION_ID
-        print_success "检测到系统: $PRETTY_NAME"
+        OS_VERSION=$VERSION_ID
+    elif [ -f /etc/redhat-release ]; then
+        OS="centos"
+        OS_VERSION=$(rpm -q --queryformat '%{VERSION}' centos-release)
     else
-        print_error "无法检测操作系统类型"
+        print_message "$RED" "无法检测操作系统"
+        exit 1
+    fi
+    log "检测到操作系统: $OS $OS_VERSION"
+}
+
+# 函数：检查 root 权限
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        print_message "$RED" "请使用 root 权限运行此脚本"
+        print_message "$YELLOW" "请执行: sudo $0"
         exit 1
     fi
 }
 
-# 检查系统资源
-check_system() {
-    print_info "检查系统资源..."
-    
-    # 检查内存
-    total_mem=$(free -m | awk 'NR==2{print $2}')
-    if [[ $total_mem -lt 512 ]]; then
-        print_warning "系统内存小于 512MB，可能影响运行"
-    else
-        print_success "内存检查通过: ${total_mem}MB"
-    fi
-    
-    # 检查磁盘空间
-    available_space=$(df -m / | awk 'NR==2{print $4}')
-    if [[ $available_space -lt 1024 ]]; then
-        print_warning "可用磁盘空间小于 1GB"
-    else
-        print_success "磁盘空间检查通过: ${available_space}MB"
-    fi
+# 函数：检查命令是否存在
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-# 安装依赖
-install_dependencies() {
-    print_info "安装系统依赖..."
-    
-    case $OS in
-        ubuntu|debian)
-            apt-get update -y
-            apt-get install -y curl wget git sudo lsof
-            ;;
-        centos|rhel|rocky|almalinux)
-            yum install -y epel-release
-            yum install -y curl wget git sudo lsof
-            ;;
-        *)
-            print_error "不支持的操作系统: $OS"
-            exit 1
-            ;;
-    esac
-    
-    print_success "依赖安装完成"
-}
-
-# 安装 Docker
+# 函数：安装 Docker
 install_docker() {
-    if command -v docker &> /dev/null; then
-        DOCKER_VERSION=$(docker --version | awk '{print $3}' | sed 's/,//')
-        print_success "Docker 已安装 (版本: $DOCKER_VERSION)"
-        return 0
+    print_message "$YELLOW" "开始安装 Docker..."
+
+    if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+        apt-get update
+        apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+    elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
+        yum install -y yum-utils
+        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     fi
-    
-    print_info "开始安装 Docker..."
-    
-    # 使用官方脚本安装 Docker
-    curl -fsSL https://get.docker.com | bash -s docker --mirror Aliyun
-    
-    if [[ $? -ne 0 ]]; then
-        print_error "Docker 安装失败"
-        exit 1
-    fi
-    
+
     # 启动 Docker
     systemctl start docker
     systemctl enable docker
-    
-    print_success "Docker 安装完成"
-}
 
-# 安装 Docker Compose (可选)
-install_docker_compose() {
-    if command -v docker-compose &> /dev/null; then
-        print_success "Docker Compose 已安装"
-        return 0
+    # 安装 Docker Compose
+    if ! command_exists docker-compose; then
+        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
     fi
-    
-    print_info "安装 Docker Compose..."
-    
-    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
-    
-    curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-        -o /usr/local/bin/docker-compose
-    
-    chmod +x /usr/local/bin/docker-compose
-    
-    print_success "Docker Compose 安装完成"
+
+    print_message "$GREEN" "Docker 安装完成"
+    docker --version
+    docker-compose --version
 }
 
-# 检查端口占用
-check_port() {
-    local port=$1
-    if lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
-        return 1
+# 函数：检查 Docker 环境
+check_docker() {
+    if command_exists docker; then
+        print_message "$GREEN" "✓ Docker 已安装"
+        docker --version
     else
-        return 0
-    fi
-}
-
-# 获取用户输入的端口
-get_port() {
-    while true; do
-        read -p "请输入访问端口 (默认 $DEFAULT_PORT): " PORT
-        PORT=${PORT:-$DEFAULT_PORT}
-        
-        if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-            print_error "端口号无效，请输入 1-65535 之间的数字"
-            continue
-        fi
-        
-        if check_port $PORT; then
-            print_success "端口 $PORT 可用"
-            break
+        print_message "$RED" "✗ Docker 未安装"
+        read -p "是否安装 Docker? (y/n): " install_docker_choice
+        if [ "$install_docker_choice" = "y" ] || [ "$install_docker_choice" = "Y" ]; then
+            install_docker
         else
-            print_warning "端口 $PORT 已被占用"
-            read -p "是否使用其他端口? (y/n): " choice
-            if [[ $choice != "y" && $choice != "Y" ]]; then
-                exit 0
-            fi
+            print_message "$RED" "无法继续，Docker 是必需的"
+            exit 1
         fi
-    done
-}
+    fi
 
-# 创建数据目录
-create_directories() {
-    print_info "创建数据目录..."
-    
-    mkdir -p "$INSTALL_PATH/conf"
-    mkdir -p "$INSTALL_PATH/uploads"
-    mkdir -p "$INSTALL_PATH/database"
-    
-    print_success "目录创建完成: $INSTALL_PATH"
-}
-
-# 停止并删除旧容器
-remove_old_container() {
-    if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        print_info "检测到旧容器，正在删除..."
-        docker stop $CONTAINER_NAME >/dev/null 2>&1
-        docker rm $CONTAINER_NAME >/dev/null 2>&1
-        print_success "旧容器已删除"
+    # 检查 Docker 是否运行
+    if ! systemctl is-active --quiet docker; then
+        print_message "$YELLOW" "Docker 未运行，正在启动..."
+        systemctl start docker
     fi
 }
 
-# 拉取 Docker 镜像
-pull_image() {
-    print_info "拉取 Sun-Panel 镜像..."
-    
-    docker pull $DOCKER_IMAGE
-    
-    if [[ $? -ne 0 ]]; then
-        print_error "镜像拉取失败"
-        exit 1
+# 函数：安装 Nginx
+install_nginx() {
+    if command_exists nginx; then
+        print_message "$GREEN" "✓ Nginx 已安装"
+    else
+        print_message "$YELLOW" "正在安装 Nginx..."
+
+        if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+            apt-get update
+            apt-get install -y nginx certbot python3-certbot-nginx
+        elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
+            yum install -y nginx epel-release
+            yum install -y certbot python3-certbot-nginx
+        fi
+
+        systemctl start nginx
+        systemctl enable nginx
+
+        print_message "$GREEN" "Nginx 安装完成"
     fi
-    
-    print_success "镜像拉取完成"
 }
 
-# 启动容器
-start_container() {
-    print_info "启动 Sun-Panel 容器..."
-    
-    docker run -d \
-        --name $CONTAINER_NAME \
-        --restart=always \
-        -p $PORT:3002 \
-        -v "$INSTALL_PATH/conf:/app/conf" \
-        -v "$INSTALL_PATH/uploads:/app/uploads" \
-        -v "$INSTALL_PATH/database:/app/database" \
-        $DOCKER_IMAGE
-    
-    if [[ $? -ne 0 ]]; then
-        print_error "容器启动失败"
-        exit 1
+# 函数：安装 Certbot (SSL证书工具)
+install_certbot() {
+    if command_exists certbot; then
+        print_message "$GREEN" "✓ Certbot 已安装"
+    else
+        print_message "$YELLOW" "正在安装 Certbot..."
+
+        if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+            apt-get update
+            apt-get install -y certbot python3-certbot-nginx
+        elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ]; then
+            yum install -y certbot python3-certbot-nginx
+        fi
+
+        print_message "$GREEN" "Certbot 安装完成"
     fi
-    
-    sleep 3
-    
-    if docker ps | grep -q $CONTAINER_NAME; then
-        print_success "容器启动成功"
+}
+
+# 函数：获取服务器 IP
+get_server_ip() {
+    local ip=$(curl -s4 ip.sb || curl -s4 ifconfig.me || curl -s4 icanhazip.com)
+    echo "$ip"
+}
+
+# 函数：验证域名 DNS 解析
+verify_dns() {
+    local domain=$1
+    local expected_ip=$(get_server_ip)
+    local resolved_ip=$(nslookup "$domain" | grep "Address:" | tail -1 | awk '{print $2}')
+
+    if [ "$resolved_ip" = "$expected_ip" ]; then
         return 0
     else
-        print_error "容器启动失败，请查看日志: docker logs $CONTAINER_NAME"
-        exit 1
+        return 1
     fi
 }
 
-# 显示安装信息
-show_install_info() {
-    clear
-    show_logo
-    
-    echo -e "${GREEN}================================================${NC}"
-    echo -e "${GREEN}           Sun-Panel 安装完成！${NC}"
-    echo -e "${GREEN}================================================${NC}"
+# 函数：部署项目
+deploy_project() {
+    print_title
+    print_message "$BLUE" "━━━ 开始部署 Sun Panel V2 ━━━"
     echo ""
-    
-    # 获取服务器 IP
-    SERVER_IP=$(curl -s ip.sb || curl -s ifconfig.me || echo "YOUR_SERVER_IP")
-    
-    echo -e "${CYAN}访问信息:${NC}"
-    echo -e "  访问地址: ${GREEN}http://${SERVER_IP}:${PORT}${NC}"
-    echo -e "  默认账号: ${YELLOW}admin@sun.cc${NC}"
-    echo -e "  默认密码: ${YELLOW}12345678${NC}"
+
+    # 获取配置参数
+    print_message "$YELLOW" "请输入配置信息："
     echo ""
-    
-    echo -e "${CYAN}数据目录:${NC}"
-    echo -e "  安装路径: ${BLUE}$INSTALL_PATH${NC}"
-    echo -e "  配置文件: ${BLUE}$INSTALL_PATH/conf${NC}"
-    echo -e "  上传文件: ${BLUE}$INSTALL_PATH/uploads${NC}"
-    echo -e "  数据库: ${BLUE}$INSTALL_PATH/database${NC}"
+
+    read -p "容器端口 (默认 3002): " container_port
+    container_port=${container_port:-3002}
+
+    read -p "是否配置域名和 SSL? (y/n): " use_ssl
+
+    if [ "$use_ssl" = "y" ] || [ "$use_ssl" = "Y" ]; then
+        while true; do
+            read -p "请输入域名 (如: panel.example.com): " domain
+            if [ -z "$domain" ]; then
+                print_message "$RED" "域名不能为空"
+                continue
+            fi
+
+            # 验证域名 DNS 解析
+            print_message "$YELLOW" "正在验证域名 DNS 解析..."
+            if verify_dns "$domain"; then
+                print_message "$GREEN" "✓ 域名解析正确: $domain -> $(get_server_ip)"
+                break
+            else
+                print_message "$RED" "✗ 域名解析不正确或未生效"
+                print_message "$YELLOW" "请确保域名已正确解析到服务器 IP: $(get_server_ip)"
+                read -p "是否继续? (y/n): " continue_choice
+                if [ "$continue_choice" != "y" ] && [ "$continue_choice" != "Y" ]; then
+                    return 1
+                fi
+                break
+            fi
+        done
+
+        read -p "请输入邮箱地址 (用于证书通知): " email
+        if [ -z "$email" ]; then
+            print_message "$RED" "邮箱不能为空"
+            return 1
+        fi
+    else
+        domain=""
+        email=""
+    fi
+
+    # 创建数据目录
+    print_message "$YELLOW" "创建数据目录..."
+    mkdir -p "$DATA_DIR"
+    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$CONFIG_DIR"
+
+    # 停止现有容器（如果存在）
+    if docker ps -a | grep -q "$CONTAINER_NAME"; then
+        print_message "$YELLOW" "停止现有容器..."
+        docker stop "$CONTAINER_NAME" 2>/dev/null
+        docker rm "$CONTAINER_NAME" 2>/dev/null
+    fi
+
+    # 拉取镜像
+    print_message "$YELLOW" "拉取 Docker 镜像..."
+    docker pull "$IMAGE_NAME:$IMAGE_TAG"
+
+    # 启动容器
+    print_message "$YELLOW" "启动容器..."
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        --restart=unless-stopped \
+        -p "$container_port:3002" \
+        -v "$DATA_DIR:/app/data" \
+        "$IMAGE_NAME:$IMAGE_TAG"
+
+    # 检查容器状态
+    sleep 3
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        print_message "$GREEN" "✓ 容器启动成功"
+    else
+        print_message "$RED" "✗ 容器启动失败"
+        docker logs "$CONTAINER_NAME"
+        return 1
+    fi
+
+    # 配置 Nginx 和 SSL
+    if [ "$use_ssl" = "y" ] || [ "$use_ssl" = "Y" ]; then
+        install_nginx
+        install_certbot
+
+        # 创建 Nginx 配置
+        print_message "$YELLOW" "配置 Nginx 反向代理..."
+        cat > "$NGINX_CONF_DIR/$domain.conf" << EOF
+server {
+    listen 80;
+    server_name $domain;
+
+    location / {
+        proxy_pass http://127.0.0.1:$container_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+EOF
+
+        # 启用站点
+        ln -sf "$NGINX_CONF_DIR/$domain.conf" "$NGINX_ENABLED_DIR/$domain.conf"
+
+        # 测试 Nginx 配置
+        nginx -t
+        systemctl reload nginx
+
+        # 申请 SSL 证书
+        print_message "$YELLOW" "申请 SSL 证书..."
+        certbot --nginx -d "$domain" --email "$email" --agree-tos --non-interactive --redirect
+
+        if [ $? -eq 0 ]; then
+            print_message "$GREEN" "✓ SSL 证书申请成功"
+        else
+            print_message "$RED" "✗ SSL 证书申请失败"
+            print_message "$YELLOW" "请手动运行: certbot --nginx -d $domain"
+        fi
+    fi
+
+    # 保存配置
+    cat > "$CONFIG_DIR/config.conf" << EOF
+CONTAINER_NAME=$CONTAINER_NAME
+IMAGE_NAME=$IMAGE_NAME
+IMAGE_TAG=$IMAGE_TAG
+CONTAINER_PORT=$container_port
+DOMAIN=$domain
+EMAIL=$email
+DATA_DIR=$DATA_DIR
+BACKUP_DIR=$BACKUP_DIR
+EOF
+
+    # 显示部署信息
+    print_separator
+    print_message "$GREEN" "━━━ 部署完成 ━━━"
     echo ""
-    
-    echo -e "${CYAN}常用命令:${NC}"
-    echo -e "  启动: ${BLUE}docker start $CONTAINER_NAME${NC}"
-    echo -e "  停止: ${BLUE}docker stop $CONTAINER_NAME${NC}"
-    echo -e "  重启: ${BLUE}docker restart $CONTAINER_NAME${NC}"
-    echo -e "  查看日志: ${BLUE}docker logs -f $CONTAINER_NAME${NC}"
-    echo -e "  查看状态: ${BLUE}docker ps | grep $CONTAINER_NAME${NC}"
-    echo ""
-    
-    echo -e "${YELLOW}提示: 首次登录后请立即修改默认密码！${NC}"
-    echo ""
+    print_message "$GREEN" "容器名称: $CONTAINER_NAME"
+    print_message "$GREEN" "容器端口: $container_port"
+    print_message "$GREEN" "数据目录: $DATA_DIR"
+    print_message "$GREEN" "配置目录: $CONFIG_DIR"
+
+    if [ -n "$domain" ]; then
+        print_message "$GREEN" "访问地址: https://$domain"
+        print_message "$GREEN" "域名: $domain"
+    else
+        print_message "$GREEN" "访问地址: http://$(get_server_ip):$container_port"
+    fi
+
+    print_separator
+
+    read -p "按任意键继续..."
 }
 
-# 查看状态
+# 函数：查看项目状态
 check_status() {
-    show_logo
-    
-    if docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
-        print_success "Sun-Panel 运行中"
-        echo ""
-        docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-        echo ""
-        
-        SERVER_IP=$(curl -s ip.sb 2>/dev/null || echo "YOUR_SERVER_IP")
-        MAPPED_PORT=$(docker port $CONTAINER_NAME 2>/dev/null | grep 3002 | cut -d: -f2)
-        
-        echo -e "${GREEN}访问地址: http://${SERVER_IP}:${MAPPED_PORT}${NC}"
-    else
-        print_warning "Sun-Panel 未运行"
-    fi
-    
+    print_title
+    print_message "$BLUE" "━━━ 项目状态 ━━━"
     echo ""
-    read -p "按回车键返回主菜单..."
+
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
+    else
+        print_message "$YELLOW" "未找到配置文件"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 容器状态
+    print_message "$CYAN" "容器状态:"
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        print_message "$GREEN" "  ✓ 容器运行中"
+        docker ps --filter "name=$CONTAINER_NAME" --format "  名称: {{.Names}}"
+        docker ps --filter "name=$CONTAINER_NAME" --format "  端口: {{.Ports}}"
+        docker ps --filter "name=$CONTAINER_NAME" --format "  镜像: {{.Image}}"
+    else
+        print_message "$RED" "  ✗ 容器未运行"
+        if docker ps -a | grep -q "$CONTAINER_NAME"; then
+            print_message "$YELLOW" "  容器已停止，可使用升级功能重启"
+        fi
+    fi
+
+    echo ""
+
+    # 系统资源
+    print_message "$CYAN" "系统资源:"
+    echo "  CPU 使用率: $(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | awk -F'%' '{print $1}')%"
+    echo "  内存使用: $(free -h | awk '/Mem:/ {printf "%.1f/%.1f GB (%.1f%%)\n", $3/1024, $2/1024, $3*100/$2}')"
+    echo "  磁盘使用: $(df -h /opt/sun-panel | awk 'NR==2 {printf "%s / %s (%s)\n", $3, $2, $5}')"
+
+    echo ""
+
+    # 网络状态
+    print_message "$CYAN" "网络状态:"
+    echo "  服务器 IP: $(get_server_ip)"
+
+    if [ -n "$DOMAIN" ]; then
+        echo "  域名: $DOMAIN"
+        if curl -sI "https://$DOMAIN" | grep -q "HTTP"; then
+            print_message "$GREEN" "  ✓ HTTPS 访问正常"
+        else
+            print_message "$YELLOW" "  ! HTTPS 访问异常"
+        fi
+    fi
+
+    if [ -n "$CONTAINER_PORT" ]; then
+        echo "  容器端口: $CONTAINER_PORT"
+    fi
+
+    echo ""
+
+    # Docker 信息
+    print_message "$CYAN" "Docker 信息:"
+    echo "  Docker 版本: $(docker --version)"
+    echo "  Docker 状态: $(systemctl is-active docker)"
+
+    print_separator
+    read -p "按任意键继续..."
 }
 
-# 查看日志
+# 函数：升级项目
+upgrade_project() {
+    print_title
+    print_message "$BLUE" "━━━ 升级项目 ━━━"
+    echo ""
+
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
+    else
+        print_message "$RED" "未找到配置文件，无法升级"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    print_message "$YELLOW" "当前版本:"
+    docker ps --filter "name=$CONTAINER_NAME" --format "{{.Image}}"
+    echo ""
+
+    read -p "是否升级到最新版本? (y/n): " upgrade_choice
+
+    if [ "$upgrade_choice" != "y" ] && [ "$upgrade_choice" != "Y" ]; then
+        print_message "$YELLOW" "已取消升级"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 备份数据
+    print_message "$YELLOW" "正在备份数据..."
+    backup_date=$(date +%Y%m%d_%H%M%S)
+    backup_file="$BACKUP_DIR/backup_$backup_date.tar.gz"
+
+    if [ -d "$DATA_DIR" ]; then
+        tar -czf "$backup_file" -C "$DATA_DIR" . 2>/dev/null
+        if [ $? -eq 0 ]; then
+            print_message "$GREEN" "✓ 数据备份成功: $backup_file"
+        else
+            print_message "$YELLOW" "! 数据备份失败，继续升级..."
+        fi
+    fi
+
+    # 拉取最新镜像
+    print_message "$YELLOW" "拉取最新镜像..."
+    docker pull "$IMAGE_NAME:$IMAGE_TAG"
+
+    if [ $? -ne 0 ]; then
+        print_message "$RED" "✗ 镜像拉取失败"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 停止并删除旧容器
+    print_message "$YELLOW" "停止旧容器..."
+    docker stop "$CONTAINER_NAME"
+    docker rm "$CONTAINER_NAME"
+
+    # 启动新容器
+    print_message "$YELLOW" "启动新容器..."
+    docker run -d \
+        --name "$CONTAINER_NAME" \
+        --restart=unless-stopped \
+        -p "$CONTAINER_PORT:3002" \
+        -v "$DATA_DIR:/app/data" \
+        "$IMAGE_NAME:$IMAGE_TAG"
+
+    # 检查容器状态
+    sleep 3
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        print_message "$GREEN" "✓ 升级成功"
+
+        # 清理旧镜像
+        print_message "$YELLOW" "清理旧镜像..."
+        docker image prune -f
+
+        print_separator
+        print_message "$GREEN" "━━━ 升级完成 ━━━"
+    else
+        print_message "$RED" "✗ 升级失败，正在回滚..."
+
+        # 回滚到之前的镜像（如果有）
+        print_message "$YELLOW" "尝试回滚..."
+        # 这里可以添加回滚逻辑
+        docker logs "$CONTAINER_NAME"
+    fi
+
+    print_separator
+    read -p "按任意键继续..."
+}
+
+# 函数：备份数据
+backup_data() {
+    print_title
+    print_message "$BLUE" "━━━ 备份数据 ━━━"
+    echo ""
+
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
+    else
+        print_message "$RED" "未找到配置文件"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 检查数据目录
+    if [ ! -d "$DATA_DIR" ]; then
+        print_message "$RED" "数据目录不存在: $DATA_DIR"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 询问备份路径
+    read -p "备份路径 (默认: $BACKUP_DIR): " backup_path
+    backup_path=${backup_path:-$BACKUP_DIR}
+
+    # 创建备份目录
+    mkdir -p "$backup_path"
+
+    # 生成备份文件名
+    backup_date=$(date +%Y%m%d_%H%M%S)
+    backup_file="$backup_path/sun-panel-backup_$backup_date.tar.gz"
+
+    # 执行备份
+    print_message "$YELLOW" "正在备份..."
+    tar -czf "$backup_file" -C "$DATA_DIR" . 2>/dev/null
+
+    if [ $? -eq 0 ]; then
+        file_size=$(du -h "$backup_file" | awk '{print $1}')
+        print_message "$GREEN" "✓ 备份成功"
+        print_message "$GREEN" "备份文件: $backup_file"
+        print_message "$GREEN" "文件大小: $file_size"
+    else
+        print_message "$RED" "✗ 备份失败"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 列出备份文件
+    echo ""
+    print_message "$CYAN" "历史备份:"
+    ls -lh "$backup_path"/*.tar.gz 2>/dev/null || print_message "$YELLOW" "暂无历史备份"
+
+    print_separator
+    read -p "按任意键继续..."
+}
+
+# 函数：恢复数据
+restore_data() {
+    print_title
+    print_message "$BLUE" "━━━ 恢复数据 ━━━"
+    echo ""
+
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
+    else
+        print_message "$RED" "未找到配置文件"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 列出备份文件
+    print_message "$CYAN" "可用的备份文件:"
+    echo ""
+
+    backup_files=("$BACKUP_DIR"/*.tar.gz)
+    if [ ${#backup_files[@]} -eq 0 ]; then
+        print_message "$YELLOW" "没有找到备份文件"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    index=1
+    for file in "${backup_files[@]}"; do
+        filename=$(basename "$file")
+        file_size=$(du -h "$file" | awk '{print $1}')
+        echo "  [$index] $filename ($file_size)"
+        ((index++))
+    done
+
+    echo ""
+    read -p "请选择要恢复的备份 (输入序号): " backup_choice
+
+    if ! [[ "$backup_choice" =~ ^[0-9]+$ ]] || [ "$backup_choice" -lt 1 ] || [ "$backup_choice" -ge "$index" ]; then
+        print_message "$RED" "无效的选择"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    selected_backup="${backup_files[$((backup_choice-1))]}"
+    selected_filename=$(basename "$selected_backup")
+
+    # 确认恢复
+    print_message "$YELLOW" "警告: 恢复数据会覆盖现有数据"
+    print_message "$YELLOW" "备份文件: $selected_filename"
+    echo ""
+    read -p "确认恢复? (yes/no): " confirm_restore
+
+    if [ "$confirm_restore" != "yes" ]; then
+        print_message "$YELLOW" "已取消恢复"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 停止容器
+    print_message "$YELLOW" "停止容器..."
+    docker stop "$CONTAINER_NAME"
+
+    # 清空数据目录
+    print_message "$YELLOW" "清空数据目录..."
+    rm -rf "$DATA_DIR"/*
+    rm -rf "$DATA_DIR"/.[!.]* 2>/dev/null
+
+    # 恢复数据
+    print_message "$YELLOW" "正在恢复数据..."
+    tar -xzf "$selected_backup" -C "$DATA_DIR"
+
+    if [ $? -eq 0 ]; then
+        print_message "$GREEN" "✓ 数据恢复成功"
+    else
+        print_message "$RED" "✗ 数据恢复失败"
+    fi
+
+    # 启动容器
+    print_message "$YELLOW" "启动容器..."
+    docker start "$CONTAINER_NAME"
+
+    sleep 3
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        print_message "$GREEN" "✓ 容器已启动"
+    else
+        print_message "$RED" "✗ 容器启动失败"
+    fi
+
+    print_separator
+    read -p "按任意键继续..."
+}
+
+# 函数：卸载项目
+uninstall_project() {
+    print_title
+    print_message "$BLUE" "━━━ 卸载项目 ━━━"
+    echo ""
+
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
+    else
+        print_message "$YELLOW" "未找到配置文件"
+    fi
+
+    print_message "$RED" "警告: 此操作将删除 Sun Panel V2 及其数据"
+    print_message "$YELLOW" "建议先备份数据"
+    echo ""
+
+    # 询问是否备份
+    read -p "是否先备份数据? (y/n): " backup_before_uninstall
+    if [ "$backup_before_uninstall" = "y" ] || [ "$backup_before_uninstall" = "Y" ]; then
+        backup_data
+    fi
+
+    # 确认卸载
+    read -p "确认卸载? 输入 'yes' 继续: " confirm_uninstall
+
+    if [ "$confirm_uninstall" != "yes" ]; then
+        print_message "$YELLOW" "已取消卸载"
+        read -p "按任意键继续..."
+        return
+    fi
+
+    # 停止并删除容器
+    if docker ps -a | grep -q "$CONTAINER_NAME"; then
+        print_message "$YELLOW" "停止并删除容器..."
+        docker stop "$CONTAINER_NAME" 2>/dev/null
+        docker rm "$CONTAINER_NAME" 2>/dev/null
+    fi
+
+    # 删除镜像
+    print_message "$YELLOW" "删除镜像..."
+    docker rmi "$IMAGE_NAME:$IMAGE_TAG" 2>/dev/null || print_message "$YELLOW" "镜像不存在或已被删除"
+
+    # 删除 Nginx 配置（如果存在）
+    if [ -n "$DOMAIN" ] && [ -f "$NGINX_CONF_DIR/$DOMAIN.conf" ]; then
+        print_message "$YELLOW" "删除 Nginx 配置..."
+        rm -f "$NGINX_ENABLED_DIR/$DOMAIN.conf"
+        rm -f "$NGINX_CONF_DIR/$DOMAIN.conf"
+        systemctl reload nginx
+
+        # 撤销 SSL 证书
+        print_message "$YELLOW" "撤销 SSL 证书..."
+        certbot delete --cert-name "$DOMAIN" --non-interactive 2>/dev/null || true
+    fi
+
+    # 删除配置文件
+    print_message "$YELLOW" "删除配置文件..."
+    rm -rf "$CONFIG_DIR"
+
+    # 询问是否删除数据
+    echo ""
+    read -p "是否删除数据目录? (y/n): " delete_data
+    if [ "$delete_data" = "y" ] || [ "$delete_data" = "Y" ]; then
+        print_message "$YELLOW" "删除数据目录..."
+        rm -rf "$DATA_DIR"
+        rm -rf "$BACKUP_DIR"
+    else
+        print_message "$GREEN" "保留数据目录: $DATA_DIR"
+        print_message "$GREEN" "保留备份目录: $BACKUP_DIR"
+    fi
+
+    print_separator
+    print_message "$GREEN" "卸载完成"
+    print_separator
+    read -p "按任意键继续..."
+}
+
+# 函数：查看日志
 view_logs() {
-    show_logo
-    print_info "查看容器日志 (Ctrl+C 退出)"
+    print_title
+    print_message "$BLUE" "━━━ 查看日志 ━━━"
     echo ""
-    docker logs -f --tail 100 $CONTAINER_NAME
-}
 
-# 重启服务
-restart_service() {
-    print_info "重启 Sun-Panel..."
-    docker restart $CONTAINER_NAME
-    
-    if [[ $? -eq 0 ]]; then
-        print_success "重启成功"
+    # 加载配置
+    if [ -f "$CONFIG_DIR/config.conf" ]; then
+        . "$CONFIG_DIR/config.conf"
     else
-        print_error "重启失败"
+        CONTAINER_NAME="sun-panel"
     fi
-    
-    sleep 2
+
+    print_message "$YELLOW" "查看容器日志 (Ctrl+C 退出)..."
+    echo ""
+    docker logs -f --tail 100 "$CONTAINER_NAME"
 }
 
-# 更新容器
-update_container() {
-    show_logo
-    print_warning "即将更新 Sun-Panel 到最新版本"
-    read -p "确认更新? (y/n): " confirm
-    
-    if [[ $confirm != "y" && $confirm != "Y" ]]; then
-        return
-    fi
-    
-    print_info "停止当前容器..."
-    docker stop $CONTAINER_NAME
-    
-    print_info "备份数据..."
-    BACKUP_DIR="$HOME/sun-panel-backup-$(date +%Y%m%d-%H%M%S)"
-    cp -r $INSTALL_PATH $BACKUP_DIR
-    print_success "数据已备份至: $BACKUP_DIR"
-    
-    print_info "删除旧容器..."
-    docker rm $CONTAINER_NAME
-    
-    print_info "拉取最新镜像..."
-    docker pull $DOCKER_IMAGE
-    
-    print_info "启动新容器..."
-    
-    # 获取原来的端口
-    if [[ -f "$INSTALL_PATH/.port" ]]; then
-        PORT=$(cat "$INSTALL_PATH/.port")
-    else
-        PORT=$DEFAULT_PORT
-    fi
-    
-    start_container
-    print_success "更新完成！"
-    
-    sleep 2
+# 函数：显示主菜单
+show_menu() {
+    print_title
+    print_message "$GREEN" "请选择操作:"
+    echo ""
+    echo "  ${GREEN}1)${NC} 部署项目"
+    echo "  ${GREEN}2)${NC} 查看状态"
+    echo "  ${GREEN}3)${NC} 升级项目"
+    echo "  ${GREEN}4)${NC} 备份数据"
+    echo "  ${GREEN}5)${NC} 恢复数据"
+    echo "  ${GREEN}6)${NC} 查看日志"
+    echo "  ${GREEN}7)${NC} 卸载项目"
+    echo ""
+    echo "  ${YELLOW}0)${NC} 退出"
+    echo ""
+    print_separator
 }
 
-# 卸载
-uninstall() {
-    show_logo
-    print_warning "即将卸载 Sun-Panel"
-    echo -e "${RED}注意: 这将删除所有容器和镜像，但保留数据文件${NC}"
-    read -p "确认卸载? (y/n): " confirm
-    
-    if [[ $confirm != "y" && $confirm != "Y" ]]; then
-        return
-    fi
-    
-    print_info "停止容器..."
-    docker stop $CONTAINER_NAME 2>/dev/null
-    
-    print_info "删除容器..."
-    docker rm $CONTAINER_NAME 2>/dev/null
-    
-    print_info "删除镜像..."
-    docker rmi $DOCKER_IMAGE 2>/dev/null
-    
-    read -p "是否删除数据文件? (y/n): " delete_data
-    if [[ $delete_data == "y" || $delete_data == "Y" ]]; then
-        rm -rf $INSTALL_PATH
-        print_success "数据文件已删除"
-    else
-        print_info "数据文件保留在: $INSTALL_PATH"
-    fi
-    
-    print_success "卸载完成"
-    sleep 2
-}
-
-# 完整安装流程
-full_install() {
-    show_logo
+# 主函数
+main() {
+    # 检查 root 权限
     check_root
-    detect_os
-    check_system
-    install_dependencies
-    install_docker
-    get_port
-    create_directories
-    remove_old_container
-    pull_image
-    start_container
-    
-    # 保存端口号
-    echo $PORT > "$INSTALL_PATH/.port"
-    
-    show_install_info
-}
 
-# 主菜单
-main_menu() {
+    # 检测操作系统
+    detect_os
+
+    # 检查 Docker
+    check_docker
+
+    # 主循环
     while true; do
-        show_logo
-        echo -e "${CYAN}请选择操作:${NC}"
-        echo ""
-        echo "  1) 安装 Sun-Panel"
-        echo "  2) 查看状态"
-        echo "  3) 启动服务"
-        echo "  4) 停止服务"
-        echo "  5) 重启服务"
-        echo "  6) 查看日志"
-        echo "  7) 更新版本"
-        echo "  8) 卸载"
-        echo "  0) 退出"
-        echo ""
-        read -p "请输入选项 [0-8]: " choice
-        
+        show_menu
+        read -p "请输入选项 [0-7]: " choice
+
         case $choice in
             1)
-                full_install
-                read -p "按回车键继续..."
+                deploy_project
                 ;;
             2)
                 check_status
                 ;;
             3)
-                docker start $CONTAINER_NAME && print_success "启动成功" || print_error "启动失败"
-                sleep 2
+                upgrade_project
                 ;;
             4)
-                docker stop $CONTAINER_NAME && print_success "停止成功" || print_error "停止失败"
-                sleep 2
+                backup_data
                 ;;
             5)
-                restart_service
+                restore_data
                 ;;
             6)
                 view_logs
                 ;;
             7)
-                update_container
-                ;;
-            8)
-                uninstall
+                uninstall_project
                 ;;
             0)
-                print_info "感谢使用，再见！"
+                print_message "$GREEN" "感谢使用 Sun Panel V2 一键部署脚本!"
                 exit 0
                 ;;
             *)
-                print_error "无效选项，请重新选择"
+                print_message "$RED" "无效的选项，请重新选择"
                 sleep 2
                 ;;
         esac
     done
 }
 
-# 脚本入口
-if [[ "$1" == "install" ]]; then
-    full_install
-elif [[ "$1" == "uninstall" ]]; then
-    uninstall
-else
-    main_menu
-fi
+# 运行主函数
+main

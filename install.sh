@@ -6,14 +6,26 @@
 # 功能：Docker部署、Nginx反向代理、SSL证书、状态管理、备份升级
 ####################################################################
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
+# 检测终端是否支持颜色
+if [ -t 1 ] && command -v tput >/dev/null 2>&1 && tput colors >/dev/null 2>&1; then
+    RED=$(tput setaf 1)
+    GREEN=$(tput setaf 2)
+    YELLOW=$(tput setaf 3)
+    BLUE=$(tput setaf 4)
+    PURPLE=$(tput setaf 5)
+    CYAN=$(tput setaf 6)
+    BOLD=$(tput bold)
+    NC=$(tput sgr0)
+else
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    PURPLE=''
+    CYAN=''
+    BOLD=''
+    NC=''
+fi
 
 # 项目信息
 PROJECT_NAME="sun-panel"
@@ -41,7 +53,7 @@ log() {
 print_message() {
     local color=$1
     local message=$2
-    echo -e "${color}${message}${NC}"
+    printf "${color}%s${NC}\n" "$message"
     log "$message"
 }
 
@@ -782,17 +794,17 @@ view_logs() {
 show_menu() {
     print_title
     print_message "$GREEN" "请选择操作:"
-    echo ""
-    echo "  ${GREEN}1)${NC} 部署项目"
-    echo "  ${GREEN}2)${NC} 查看状态"
-    echo "  ${GREEN}3)${NC} 升级项目"
-    echo "  ${GREEN}4)${NC} 备份数据"
-    echo "  ${GREEN}5)${NC} 恢复数据"
-    echo "  ${GREEN}6)${NC} 查看日志"
-    echo "  ${GREEN}7)${NC} 卸载项目"
-    echo ""
-    echo "  ${YELLOW}0)${NC} 退出"
-    echo ""
+    printf "\n"
+    printf "${GREEN}  1)${NC} 部署项目\n"
+    printf "${GREEN}  2)${NC} 查看状态\n"
+    printf "${GREEN}  3)${NC} 升级项目\n"
+    printf "${GREEN}  4)${NC} 备份数据\n"
+    printf "${GREEN}  5)${NC} 恢复数据\n"
+    printf "${GREEN}  6)${NC} 查看日志\n"
+    printf "${GREEN}  7)${NC} 卸载项目\n"
+    printf "\n"
+    printf "${YELLOW}  0)${NC} 退出\n"
+    printf "\n"
     print_separator
 }
 

@@ -1,4 +1,4 @@
-# Sun-Panel 一键部署脚本
+# Sun-Panel V2 一键部署脚本
 
 <div align="center">
 

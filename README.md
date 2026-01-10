@@ -18,7 +18,7 @@
 
 Sun-Panel 是一个优秀的服务器、NAS导航面板，本脚本提供一键安装、更新、管理等功能，让部署变得更加简单。
 
-**原项目地址**: [hslr-s/sun-panel](https://github.com/hslr-s/sun-panel)
+**原项目地址**: [75412701/sun-panel-v2](https://github.com/75412701/sun-panel-v2)
 
 ## ✨ 功能特性
 

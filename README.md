@@ -61,11 +61,6 @@ curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/instal
 curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/install.sh | bash -s install
 ```
 
-### 方式四：国内加速（使用 Gitee 镜像）
-```bash
-wget -O sun-panel-install.sh https://gitee.com/你的用户名/sun-panel-deploy/raw/main/install.sh && chmod +x sun-panel-install.sh && ./sun-panel-install.sh
-```
-
 ## 📝 使用说明
 
 ### 安装完成后
@@ -73,7 +68,7 @@ wget -O sun-panel-install.sh https://gitee.com/你的用户名/sun-panel-deploy/
 访问地址：`http://你的服务器IP:3002`
 
 **默认登录信息**：
-- 账号：`admin@sun.cc`
+- 账号：`admin`
 - 密码：`12345678`
 
 > ⚠️ **重要提示**：首次登录后请立即修改默认密码！

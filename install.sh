@@ -33,10 +33,10 @@ check_root() {
     fi
 }
 
-# 安装依赖（Docker、Docker Compose、Nginx、curl、git）
+# 安装依赖（Docker、Docker Compose、Nginx、curl、git、socat）
 install_dependencies() {
     blue "=== 安装系统依赖 ==="
-    apt update && apt install -y curl git nginx apt-transport-https ca-certificates software-properties-common
+    apt update && apt install -y curl git nginx apt-transport-https ca-certificates software-properties-common socat
 
     # 安装Docker
     if ! command -v docker &> /dev/null; then
@@ -56,11 +56,17 @@ install_dependencies() {
         yellow "Docker Compose已安装，跳过"
     fi
 
-    # 安装acme.sh（用于申请SSL证书）
+    # 安装acme.sh（用于申请SSL证书，修复路径和依赖问题）
     if [ ! -d "${ACME_SH_DIR}" ]; then
         git clone ${ACME_SH_REPO} /tmp/acme.sh
-        /tmp/acme.sh/acme.sh --install --home ${ACME_SH_DIR}
-        ln -s ${ACME_SH_DIR}/acme.sh /usr/local/bin/acme.sh
+        # 关键修复1：进入克隆后的acme.sh目录，再执行安装脚本
+        cd /tmp/acme.sh || { red "错误：无法进入/tmp/acme.sh目录"; exit 1; }
+        # 关键修复2：执行官方安装脚本，指定home目录并开启自动升级
+        ./acme.sh --install --home ${ACME_SH_DIR} --auto-upgrade
+        # 建立软链接，方便全局调用
+        ln -sf ${ACME_SH_DIR}/acme.sh /usr/local/bin/acme.sh
+        # 切回原脚本工作目录，避免后续操作路径混乱
+        cd - > /dev/null
         green "acme.sh安装完成"
     else
         yellow "acme.sh已安装，跳过"
@@ -89,7 +95,7 @@ apply_ssl_certificate() {
     blue "=== 申请SSL证书（Let's Encrypt） ==="
     # 停止Nginx避免端口占用
     systemctl stop nginx
-    # 申请证书
+    # 申请证书（ec-256 算法，更高安全性）
     ${ACME_SH_DIR}/acme.sh --issue -d ${DOMAIN} --standalone -k ec-256
     # 安装证书到Nginx目录
     ${ACME_SH_DIR}/acme.sh --install-cert -d ${DOMAIN} \

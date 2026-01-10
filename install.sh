@@ -17,7 +17,6 @@ DOMAIN=""  # 用户输入的域名
 HTTP_PORT=3002  # 原项目端口
 HTTPS_PORT=443   # HTTPS端口
 ACME_SH_DIR="/root/.acme.sh"
-ACME_SH_REPO="https://github.com/acmesh-official/acme.sh.git"
 
 # 颜色输出函数
 red() { echo -e "\033[31m$1\033[0m"; }
@@ -56,17 +55,18 @@ install_dependencies() {
         yellow "Docker Compose已安装，跳过"
     fi
 
-    # 安装acme.sh（用于申请SSL证书，修复路径和依赖问题）
-    if [ ! -d "${ACME_SH_DIR}" ]; then
-        git clone ${ACME_SH_REPO} /tmp/acme.sh
-        # 关键修复1：进入克隆后的acme.sh目录，再执行安装脚本
-        cd /tmp/acme.sh || { red "错误：无法进入/tmp/acme.sh目录"; exit 1; }
-        # 关键修复2：执行官方安装脚本，指定home目录并开启自动升级
-        ./acme.sh --install --home ${ACME_SH_DIR} --auto-upgrade
-        # 建立软链接，方便全局调用
+    # 安装acme.sh（改用官方一键在线安装，稳定无路径问题）
+    if [ ! -d "${ACME_SH_DIR}" ] || [ ! -x "${ACME_SH_DIR}/acme.sh" ]; then
+        blue "=== 安装acme.sh（官方一键安装） ==="
+        # 官方一键安装命令，自动配置home目录、软链接、自动升级
+        curl https://get.acme.sh | sh -s email=admin@${DOMAIN}  # 自动使用输入的域名作为邮箱（可选）
+        # 验证安装是否成功
+        if [ ! -x "${ACME_SH_DIR}/acme.sh" ]; then
+            red "acme.sh 官方安装失败，请检查网络连接或手动执行：curl https://get.acme.sh | sh"
+            exit 1
+        fi
+        # 强制更新软链接（确保全局可调用）
         ln -sf ${ACME_SH_DIR}/acme.sh /usr/local/bin/acme.sh
-        # 切回原脚本工作目录，避免后续操作路径混乱
-        cd - > /dev/null
         green "acme.sh安装完成"
     else
         yellow "acme.sh已安装，跳过"
@@ -95,10 +95,10 @@ apply_ssl_certificate() {
     blue "=== 申请SSL证书（Let's Encrypt） ==="
     # 停止Nginx避免端口占用
     systemctl stop nginx
-    # 申请证书（ec-256 算法，更高安全性）
-    ${ACME_SH_DIR}/acme.sh --issue -d ${DOMAIN} --standalone -k ec-256
+    # 改用全局acme.sh命令，无需依赖绝对路径，避免文件不存在错误
+    acme.sh --issue -d ${DOMAIN} --standalone -k ec-256
     # 安装证书到Nginx目录
-    ${ACME_SH_DIR}/acme.sh --install-cert -d ${DOMAIN} \
+    acme.sh --install-cert -d ${DOMAIN} \
         --key-file /etc/ssl/${DOMAIN}_key.pem \
         --fullchain-file /etc/ssl/${DOMAIN}_cert.pem \
         --reloadcmd "systemctl restart nginx"
@@ -221,6 +221,11 @@ main_menu() {
         3)
             check_root
             read -p "请输入你的域名：" DOMAIN
+            # 确保acme.sh已安装
+            if ! command -v acme.sh &> /dev/null; then
+                red "acme.sh未安装，先执行完整部署或手动安装"
+                exit 1
+            fi
             apply_ssl_certificate
             ;;
         4)

@@ -70,7 +70,7 @@ curl -fsSL https://raw.githubusercontent.com/jsdzcd/sun-panel-deploy/main/instal
 
 **默认登录信息**：
 - 账号：`admin`
-- 密码：`12345678`
+- 密码：`123456`
 
 > ⚠️ **重要提示**：首次登录后请立即修改默认密码！
 
